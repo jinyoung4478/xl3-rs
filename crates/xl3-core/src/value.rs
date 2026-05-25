@@ -1,0 +1,53 @@
+//! Cell value representation used by the planner, source reader, and
+//! evaluator. Deliberately simple — strings, numbers, booleans, plus an
+//! explicit Empty so we can distinguish "blank cell" from "empty string".
+//!
+//! Errors propagate up the eval stack as `Err`, not as a `Value::Error`
+//! variant — that matches what the XTL spec calls "expression error" and
+//! avoids the JS-side `__xl3_error__` marker object until later milestones.
+
+use crate::calamine::Data as CalamineData;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Empty,
+    String(String),
+    Number(f64),
+    Bool(bool),
+}
+
+impl Value {
+    /// Canonical string form per ADR-0009 (xl3 TS `canonicalString` mirror).
+    /// Used when a value is substituted into a mixed text cell — e.g.
+    /// `"Hello {{ [Name] }}"` — so cross-impl rendering of booleans /
+    /// numbers / empty values is stable.
+    pub fn canonical(&self) -> String {
+        match self {
+            Value::Empty => String::new(),
+            Value::String(s) => s.clone(),
+            Value::Number(n) => {
+                if n.fract() == 0.0 && n.is_finite() && n.abs() < 1e16 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{n}")
+                }
+            }
+            Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+        }
+    }
+
+    pub fn from_calamine(d: &CalamineData) -> Value {
+        match d {
+            CalamineData::Empty => Value::Empty,
+            CalamineData::String(s) => Value::String(s.clone()),
+            CalamineData::Float(f) => Value::Number(*f),
+            CalamineData::Int(i) => Value::Number(*i as f64),
+            CalamineData::Bool(b) => Value::Bool(*b),
+            CalamineData::DateTime(dt) => Value::Number(dt.as_f64()),
+            CalamineData::DateTimeIso(s) | CalamineData::DurationIso(s) => {
+                Value::String(s.clone())
+            }
+            CalamineData::Error(_) => Value::Empty,
+        }
+    }
+}
