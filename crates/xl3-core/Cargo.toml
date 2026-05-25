@@ -13,8 +13,10 @@ anyhow = "1.0.102"
 calamine = "0.35"
 quick-xml = "0.39"
 rust_xlsxwriter = "0.95"
-zip = "7"
-# Filled in by `cargo add` so we pick up the latest patch versions.
+# XLSX uses store + deflate only — turn off zstd / lzma / bzip2 etc.
+# so the wasm32 build doesn't pull in a C-toolchain dependency that
+# clang can't satisfy when targeting wasm32-unknown-unknown.
+zip = { version = "7", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 

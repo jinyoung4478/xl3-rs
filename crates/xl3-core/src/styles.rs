@@ -142,9 +142,23 @@ pub fn classify_num_fmt(code: &str) -> NumFmtKind {
 pub fn parse_template_styles(path: &Path) -> Result<TemplateStyles> {
     let file = File::open(path)
         .with_context(|| format!("open template zip at {}", path.display()))?;
-    let mut archive =
+    let archive =
         ZipArchive::new(file).with_context(|| format!("zip read at {}", path.display()))?;
+    parse_template_styles_from_archive(archive)
+}
 
+/// Variant that reads styles from an in-memory XLSX byte buffer. Used
+/// by the WASM `convert()` entry point and any host that already has
+/// the template bytes in memory.
+pub fn parse_template_styles_bytes(bytes: &[u8]) -> Result<TemplateStyles> {
+    let cursor = std::io::Cursor::new(bytes.to_vec());
+    let archive = ZipArchive::new(cursor).context("zip read of template bytes")?;
+    parse_template_styles_from_archive(archive)
+}
+
+fn parse_template_styles_from_archive<R: Read + std::io::Seek>(
+    mut archive: ZipArchive<R>,
+) -> Result<TemplateStyles> {
     let (cell_xf_to_num_fmt_id, custom_num_fmts) = read_styles_xml(&mut archive)?;
     let name_to_path = read_workbook_sheet_map(&mut archive)?;
 

@@ -14,6 +14,7 @@ use anyhow::{anyhow, Context, Result};
 
 use xl3_core::calamine::{open_workbook, Data, Reader, Xlsx};
 use xl3_core::{
+    preview_bytes, read_template_inputs_bytes, render_from_bytes_to_files,
     render::{render_from_paths_with_inputs},
     value::Value,
 };
@@ -800,6 +801,42 @@ fn fixture_023_today_utc_dynamic() {
 fn fixture_006_filename_forbidden_chars() {
     run_fixture("006-filename-forbidden-chars")
         .expect("fixture 006 should emit a sanitised output filename");
+}
+
+/// Phase 2 Task 2.1 smoke: drive the WASM entry points'
+/// `xl3-core` byte-buffer surface natively so a wasm-bindgen regression
+/// would show up here (the wasm wrapper is a thin marshalling layer
+/// over these calls).
+#[test]
+fn bytes_api_round_trip_fixture_001() {
+    let Some(dir) = fixture_dir("001-bracket-substitution") else {
+        eprintln!("[skip] bytes_api_round_trip: corpus not found");
+        return;
+    };
+    let template = std::fs::read(dir.join("template.xlsx")).expect("read template");
+    let data = std::fs::read(dir.join("data.xlsx")).expect("read data");
+
+    // render_from_bytes_to_files mirrors render_from_paths_to_files —
+    // checking the path/bytes pair produces the same first-file bytes
+    // (deterministic since both go through rust_xlsxwriter).
+    let files = render_from_bytes_to_files(&template, data.clone())
+        .expect("render via bytes API");
+    assert!(!files.is_empty(), "render should produce at least one file");
+    assert!(!files[0].data.is_empty(), "rendered file should not be empty");
+
+    // Compare against expected.xlsx through the existing comparator —
+    // covers the byte-buffer source reader path end-to-end.
+    let expected = dir.join("expected.xlsx");
+    compare_workbooks_stage1(&files[0].data, &expected)
+        .expect("bytes API output should match expected");
+
+    // read_template_inputs_bytes / preview_bytes — no panics on a
+    // template that doesn't declare __inputs__.
+    let inputs = read_template_inputs_bytes(&template).expect("read_template_inputs_bytes");
+    assert!(inputs.is_empty(), "fixture 001 has no __inputs__");
+    let p = preview_bytes(&template, data).expect("preview_bytes");
+    assert_eq!(p.files.len(), 1);
+    assert!(!p.sources.is_empty());
 }
 
 /// Walk every fixture, classify pass / fail / skip, and print a summary.

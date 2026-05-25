@@ -71,11 +71,41 @@ pub fn render_from_paths_to_files_with_inputs(
     data: &Path,
     host_inputs: &HashMap<String, Value>,
 ) -> Result<Vec<OutputFile>> {
-    let mut plan = parse_template(template).context("parse template")?;
+    let plan = parse_template(template).context("parse template")?;
+    let source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
+    render_with_reader(plan, source_reader, host_inputs)
+}
+
+/// In-memory render entry — same surface as
+/// `render_from_paths_to_files_with_inputs` but takes the template
+/// and data workbooks as raw XLSX byte buffers. This is the entry
+/// point the WASM wrapper drives.
+pub fn render_from_bytes_to_files(
+    template_bytes: &[u8],
+    data_bytes: Vec<u8>,
+) -> Result<Vec<OutputFile>> {
+    render_from_bytes_to_files_with_inputs(template_bytes, data_bytes, &HashMap::new())
+}
+
+pub fn render_from_bytes_to_files_with_inputs(
+    template_bytes: &[u8],
+    data_bytes: Vec<u8>,
+    host_inputs: &HashMap<String, Value>,
+) -> Result<Vec<OutputFile>> {
+    let plan = crate::plan::parse_template_bytes(template_bytes).context("parse template")?;
+    let source_reader =
+        CalamineSourceReader::open_bytes(data_bytes).context("open source workbook")?;
+    render_with_reader(plan, source_reader, host_inputs)
+}
+
+fn render_with_reader(
+    mut plan: WorkbookPlan,
+    mut source_reader: CalamineSourceReader,
+    host_inputs: &HashMap<String, Value>,
+) -> Result<Vec<OutputFile>> {
     for (key, value) in host_inputs {
         plan.inputs.insert(key.clone(), value.clone());
     }
-    let mut source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
     let source_sheet = match plan.config.source_sheet() {
         Some(pattern) => source_reader.resolve_sheet_name(pattern).ok_or_else(|| {
             // Spec-stable message: matches xl3 (TS) /xl3-py wording so a

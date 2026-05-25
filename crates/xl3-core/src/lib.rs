@@ -32,11 +32,13 @@ pub use rust_xlsxwriter;
 
 pub use errors::{is_xtl_error, XtlError};
 pub use introspect::{
-    preview, read_template_inputs, InputKind, InputSpec, PreviewFile, PreviewResult,
-    PreviewSheet, PreviewSource,
+    preview, preview_bytes, read_template_inputs, read_template_inputs_bytes, InputKind,
+    InputSpec, PreviewFile, PreviewResult, PreviewSheet, PreviewSource,
 };
 pub use output_model::{OutputFile, XtlWarning};
-pub use plan::{CellSource, RowPlan, SheetPlan, WorkbookPlan};
-pub use render::{render, render_to_files};
+pub use plan::{parse_template, parse_template_bytes, CellSource, RowPlan, SheetPlan, WorkbookPlan};
+pub use render::{
+    render, render_from_bytes_to_files, render_from_bytes_to_files_with_inputs, render_to_files,
+};
 pub use source::{CalamineSourceReader, SourceData, SourceReader};
 pub use value::Value;

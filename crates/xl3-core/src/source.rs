@@ -6,11 +6,12 @@
 //! lands later.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::io::Cursor;
+use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
+use crate::calamine::{Data as CData, Reader, Xlsx};
 use crate::plan::SourceTable;
 use crate::styles::{self, NumFmtKind, TemplateStyles};
 use crate::value::Value;
@@ -28,30 +29,43 @@ pub trait SourceReader {
 
 /// Default `SourceReader` backed by `calamine`. Assumes the source is
 /// laid out as a single header row at row 1, followed by data rows.
-/// (xl3 0.x's `source_table = 1` convention.)
+/// (xl3 0.x's `source_table = 1` convention.) The workbook is held as
+/// an in-memory byte buffer so the styles pass can re-open the same
+/// archive cheaply — and so a `Vec<u8>` host (browser/Node) and a
+/// file host share the exact same code path.
 pub struct CalamineSourceReader {
-    workbook: Xlsx<std::io::BufReader<std::fs::File>>,
+    workbook: Xlsx<Cursor<Vec<u8>>>,
+    bytes: Vec<u8>,
     /// Source workbook styles — only parsed lazily on first need.
     /// Used to render numeric cells whose numFmt is a date format as
     /// canonical ISO strings (ADR-0017).
-    path: PathBuf,
     styles: Option<TemplateStyles>,
 }
 
 impl CalamineSourceReader {
     pub fn open(path: &Path) -> Result<Self> {
-        let workbook: Xlsx<_> = open_workbook(path)
-            .with_context(|| format!("open data workbook at {}", path.display()))?;
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("read data workbook at {}", path.display()))?;
+        Self::open_bytes(bytes)
+    }
+
+    /// In-memory variant — the WASM `convert()` entry point feeds the
+    /// data workbook in this way.
+    pub fn open_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let cursor = Cursor::new(bytes.clone());
+        let workbook: Xlsx<_> =
+            Xlsx::new(cursor).context("open data workbook from bytes")?;
         Ok(CalamineSourceReader {
             workbook,
-            path: path.to_path_buf(),
+            bytes,
             styles: None,
         })
     }
 
     fn ensure_styles(&mut self) -> &TemplateStyles {
         if self.styles.is_none() {
-            self.styles = Some(styles::parse_template_styles(&self.path).unwrap_or_default());
+            self.styles =
+                Some(styles::parse_template_styles_bytes(&self.bytes).unwrap_or_default());
         }
         self.styles.as_ref().unwrap()
     }

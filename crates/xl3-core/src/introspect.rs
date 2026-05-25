@@ -12,12 +12,13 @@
 //! as the TS/py siblings: hosts that need to render input forms or
 //! describe the output before committing to a full convert call.
 
+use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
-use crate::plan::parse_template;
+use crate::plan::{parse_template, parse_template_bytes};
 use crate::source::CalamineSourceReader;
 
 /// Mirrors xl3 (TS)'s `InputSpec` and xl3-py's `InputSpec`. The shape
@@ -91,8 +92,22 @@ pub struct PreviewSource {
 /// Does not render or open the data workbook. Mirrors xl3 (TS)'s
 /// `readTemplateInputs` and xl3-py's `read_template_inputs`.
 pub fn read_template_inputs(template: &Path) -> Result<Vec<InputSpec>> {
-    let mut wb: Xlsx<_> = open_workbook(template)
+    let wb: Xlsx<_> = open_workbook(template)
         .with_context(|| format!("open template workbook at {}", template.display()))?;
+    read_template_inputs_inner(wb)
+}
+
+/// In-memory variant for hosts that already have the template bytes
+/// (e.g. WASM `readTemplateInputs(buffer)`).
+pub fn read_template_inputs_bytes(template_bytes: &[u8]) -> Result<Vec<InputSpec>> {
+    let cursor = Cursor::new(template_bytes.to_vec());
+    let wb: Xlsx<_> = Xlsx::new(cursor).context("open template workbook from bytes")?;
+    read_template_inputs_inner(wb)
+}
+
+fn read_template_inputs_inner<R: std::io::Read + std::io::Seek>(
+    mut wb: Xlsx<R>,
+) -> Result<Vec<InputSpec>> {
     let names = wb.sheet_names();
     if !names.iter().any(|n| n == "__inputs__") {
         return Ok(Vec::new());
@@ -180,7 +195,23 @@ pub fn read_template_inputs(template: &Path) -> Result<Vec<InputSpec>> {
 /// summary of every source the template will consult.
 pub fn preview(template: &Path, data: &Path) -> Result<PreviewResult> {
     let plan = parse_template(template).context("parse template")?;
-    let mut source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
+    let source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
+    preview_inner(plan, source_reader)
+}
+
+/// In-memory variant of [`preview`] for hosts that already have the
+/// template and data bytes (e.g. the WASM wrapper).
+pub fn preview_bytes(template_bytes: &[u8], data_bytes: Vec<u8>) -> Result<PreviewResult> {
+    let plan = parse_template_bytes(template_bytes).context("parse template")?;
+    let source_reader =
+        CalamineSourceReader::open_bytes(data_bytes).context("open source workbook")?;
+    preview_inner(plan, source_reader)
+}
+
+fn preview_inner(
+    plan: crate::plan::WorkbookPlan,
+    mut source_reader: CalamineSourceReader,
+) -> Result<PreviewResult> {
     let source_sheet = match plan.config.source_sheet() {
         Some(pattern) => source_reader
             .resolve_sheet_name(pattern)

@@ -423,9 +423,24 @@ fn template_depends_on_source_row(s: &str, named_sources_to_exclude: &[&str]) ->
 
 pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
     let styles = styles::parse_template_styles(path).unwrap_or_default();
-    let mut wb: Xlsx<_> = open_workbook(path)
+    let wb: Xlsx<_> = open_workbook(path)
         .with_context(|| format!("open template workbook at {}", path.display()))?;
+    parse_template_inner(wb, styles)
+}
 
+/// Variant that builds a `WorkbookPlan` from an in-memory template
+/// XLSX buffer (the WASM entry point's input shape).
+pub fn parse_template_bytes(bytes: &[u8]) -> Result<WorkbookPlan> {
+    let styles = styles::parse_template_styles_bytes(bytes).unwrap_or_default();
+    let cursor = std::io::Cursor::new(bytes.to_vec());
+    let wb: Xlsx<_> = Xlsx::new(cursor).context("open template workbook from bytes")?;
+    parse_template_inner(wb, styles)
+}
+
+fn parse_template_inner<R: std::io::Read + std::io::Seek>(
+    mut wb: Xlsx<R>,
+    styles: styles::TemplateStyles,
+) -> Result<WorkbookPlan> {
     // First pass: collect named-source names so the row classifier can
     // recognise `<Source>[Column]` as a row-set reference (not a per-
     // source-row reference).
