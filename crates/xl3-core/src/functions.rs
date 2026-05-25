@@ -292,6 +292,17 @@ fn integer_arg(name: &str, v: &Value) -> Result<i32> {
     Ok(n as i32)
 }
 
+/// Public helper used by `eval::compare` to render an Excel serial date
+/// as a `YYYY-MM-DD` string for ADR-0017 (number ↔ date-string)
+/// comparison.
+pub fn serial_to_iso_date(serial: f64) -> Option<String> {
+    if !serial.is_finite() {
+        return None;
+    }
+    let d = excel_serial_to_datetime(serial).ok()?;
+    Some(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day))
+}
+
 fn excel_serial_to_datetime(serial: f64) -> Result<ExcelDateTime> {
     if !serial.is_finite() {
         bail!("date serial must be finite");

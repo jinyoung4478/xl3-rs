@@ -157,6 +157,14 @@ fn read_all_cells<R: std::io::Read + std::io::Seek>(
 }
 
 fn value_eq(a: &Value, b: &Value) -> bool {
+    // ADR-0007 / ADR-0009: Empty and "" (and whitespace-only strings)
+    // are semantically the same "blank" value. Our renderer emits
+    // Empty for a missing cell; xl3's reference output sometimes
+    // encodes the same blank as a zero-length shared string. Treat
+    // both shapes as equivalent at the cell-value comparison layer.
+    if xl3_core::source::is_blank_value(a) && xl3_core::source::is_blank_value(b) {
+        return true;
+    }
     match (a, b) {
         (Value::Empty, Value::Empty) => true,
         (Value::String(x), Value::String(y)) => x == y,
@@ -328,6 +336,21 @@ fn fixture_015_source_sheet_prefix_first_match() {
 fn fixture_106_division_by_zero_produces_error_cell() {
     run_fixture("106-division-by-zero-produces-error-cell")
         .expect("fixture 106 should pass");
+}
+
+#[test]
+fn fixture_088_date_comparison_equality() {
+    run_fixture("088-date-comparison-equality").expect("fixture 088 should pass");
+}
+
+#[test]
+fn fixture_054_empty_list_membership() {
+    run_fixture("054-empty-list-membership").expect("fixture 054 should pass");
+}
+
+#[test]
+fn fixture_063_compare_empty_vs_value() {
+    run_fixture("063-compare-empty-vs-value").expect("fixture 063 should pass");
 }
 
 #[test]

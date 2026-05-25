@@ -792,9 +792,15 @@ fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {
 /// `Value::List` (typically `__lists__[Name]`). If RHS is some other
 /// shape, fall back to equality so the operator still behaves sanely
 /// for a single-value RHS.
+///
+/// xl3 fixture 054: blank entries inside the list (Empty or
+/// whitespace-only string) never match anything — a list with blanks
+/// behaves the same as the same list with the blanks removed.
 fn member_of(needle: &Value, haystack: &Value) -> bool {
     match haystack {
-        Value::List(list) => list.iter().any(|item| values_equal(item, needle)),
+        Value::List(list) => list.iter().any(|item| {
+            !crate::source::is_blank_value(item) && values_equal(item, needle)
+        }),
         _ => values_equal(haystack, needle),
     }
 }
@@ -857,6 +863,25 @@ pub fn compare(l: &Value, r: &Value) -> Result<i32> {
             0
         });
     }
+    // ADR-0017: an Excel-serial number compared against a YYYY-MM-DD
+    // string is compared as date strings (the number's canonical form).
+    // Without numFmt metadata we infer "looks like a date" from the
+    // string's shape — narrow enough that non-date string compares are
+    // unaffected.
+    if let (Value::Number(n), Value::String(s)) = (l, r) {
+        if looks_like_iso_date(s) {
+            if let Some(ds) = crate::functions::serial_to_iso_date(*n) {
+                return Ok(ds.as_str().cmp(s.as_str()) as i32);
+            }
+        }
+    }
+    if let (Value::String(s), Value::Number(n)) = (l, r) {
+        if looks_like_iso_date(s) {
+            if let Some(ds) = crate::functions::serial_to_iso_date(*n) {
+                return Ok(s.as_str().cmp(ds.as_str()) as i32);
+            }
+        }
+    }
     // Try numeric on strings if both parse — covers `[Amount] > 50` when
     // the source stored Amount as text. Falls back to string compare.
     if let (Ok(ln), Ok(rn)) = (coerce_number(l), coerce_number(r)) {
@@ -871,6 +896,20 @@ pub fn compare(l: &Value, r: &Value) -> Result<i32> {
     let ls = l.canonical();
     let rs = r.canonical();
     Ok(ls.as_str().cmp(rs.as_str()) as i32)
+}
+
+fn looks_like_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 10 {
+        return false;
+    }
+    b[..4].iter().all(u8::is_ascii_digit)
+        && b[4] == b'-'
+        && b[5].is_ascii_digit()
+        && b[6].is_ascii_digit()
+        && b[7] == b'-'
+        && b[8].is_ascii_digit()
+        && b[9].is_ascii_digit()
 }
 
 // ---------------------------------------------------------------------------
