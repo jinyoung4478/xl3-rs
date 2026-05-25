@@ -78,13 +78,19 @@ pub fn render_from_paths_to_files_with_inputs(
     let mut source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
     let source_sheet = match plan.config.source_sheet() {
         Some(pattern) => source_reader.resolve_sheet_name(pattern).ok_or_else(|| {
-            anyhow::anyhow!(
-                "source_sheet pattern {pattern:?} does not match any sheet in the data workbook"
-            )
+            // Spec-stable message: matches xl3 (TS) /xl3-py wording so a
+            // host can substring-match on the code OR the human text.
+            anyhow::Error::from(crate::errors::XtlError::new(
+                crate::errors::code::SOURCE_SHEET_MISSING,
+                format!("Source sheet \"{pattern}\" was not found"),
+            ))
         })?,
-        None => source_reader
-            .first_sheet()
-            .ok_or_else(|| anyhow::anyhow!("source workbook is empty"))?,
+        None => source_reader.first_sheet().ok_or_else(|| {
+            anyhow::Error::from(crate::errors::XtlError::new(
+                crate::errors::code::SOURCE_SHEET_MISSING,
+                "Source workbook is empty",
+            ))
+        })?,
     };
     let source_table = plan.config.source_table();
     let source = source_reader.read(&source_sheet, &source_table)?;
@@ -168,18 +174,51 @@ pub fn render_to_files_with_sources(
         }
     }
     let bytes = write_workbook(&out_sheets)?;
-    let filename = plan
+    let pattern = plan
         .config
         .output_file_pattern()
         .map(str::to_string)
         .unwrap_or_else(|| "output.xlsx".to_string());
-    // ADR-0016 multi-file split (output_file_pattern with `{{ }}`)
-    // lands alongside xl3-wasm's real entry point. For now: single file.
+    // Resolve any `{{ … }}` expressions in the pattern against the
+    // first source row (ADR-0002: filenames evaluate per-file; for a
+    // single-file render there is exactly one row context).
+    let mut warnings: Vec<XtlWarning> = Vec::new();
+    let resolved = if pattern.contains("{{") && !source.rows.is_empty() {
+        let mut ctx: EvalContext = source.rows[0].clone();
+        ctx.insert("__inputs__".to_string(), inputs_value.clone());
+        ctx.insert("__lists__".to_string(), lists_value.clone());
+        inject_named_sources(&mut ctx, &named_source_handles);
+        eval_cell(&pattern, &ctx)?.canonical()
+    } else {
+        pattern
+    };
+    let filename = sanitize_filename(&resolved, &mut warnings);
     Ok(vec![OutputFile {
         filename,
         data: bytes,
-        warnings: Vec::<XtlWarning>::new(),
+        warnings,
     }])
+}
+
+/// Replace the OOXML / Windows forbidden filename characters
+/// `<>:"/\\|?*` with `_`, matching xl3 (TS)'s `sanitiseFilename`
+/// behaviour. Emits one warning per file when the result differs from
+/// the input, in the exact wording the conformance corpus checks for
+/// (ADR-0002 / fixture 006).
+fn sanitize_filename(name: &str, warnings: &mut Vec<XtlWarning>) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            _ => c,
+        })
+        .collect();
+    if cleaned != name {
+        warnings.push(XtlWarning {
+            message: format!("Output filename \"{name}\" sanitized to \"{cleaned}\""),
+        });
+    }
+    cleaned
 }
 
 /// xlsx limits sheet names to 31 characters and disallows `:\/?*[]`.

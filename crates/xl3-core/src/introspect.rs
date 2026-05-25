@@ -185,13 +185,19 @@ pub fn preview(template: &Path, data: &Path) -> Result<PreviewResult> {
         Some(pattern) => source_reader
             .resolve_sheet_name(pattern)
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "source_sheet pattern {pattern:?} does not match any sheet in the data workbook"
-                )
+                anyhow::Error::from(crate::errors::XtlError::new(
+                    crate::errors::code::SOURCE_SHEET_MISSING,
+                    format!("Source sheet \"{pattern}\" was not found"),
+                ))
             })?,
         None => source_reader
             .first_sheet()
-            .ok_or_else(|| anyhow::anyhow!("source workbook is empty"))?,
+            .ok_or_else(|| {
+                anyhow::Error::from(crate::errors::XtlError::new(
+                    crate::errors::code::SOURCE_SHEET_MISSING,
+                    "Source workbook is empty",
+                ))
+            })?,
     };
     let source_table = plan.config.source_table();
     let default_source = {

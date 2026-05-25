@@ -48,19 +48,10 @@ fn run_fixture(fixture_name: &str) -> Result<()> {
 
     let template = dir.join("template.xlsx");
     let data = dir.join("data.xlsx");
-    let expected = dir.join("expected.xlsx");
-
-    if !expected.exists() {
-        return Err(anyhow!(
-            "fixture {fixture_name} has no expected.xlsx — error/dynamic fixtures not yet supported by the Rust runner"
-        ));
-    }
+    let expected_single = dir.join("expected.xlsx");
+    let expected_dir = dir.join("expected");
 
     let meta_yaml = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
-    // Stage 2 fixtures exercise OOXML canonicalisation (attribute order,
-    // quote style, zip entry order) — outside the cell-value
-    // comparison this runner does. Skip cleanly so a Stage 2 corpus
-    // entry doesn't masquerade as a stage-1 failure.
     if meta_yaml
         .lines()
         .any(|l| l.trim().starts_with("comparison_stage:") && l.contains('2'))
@@ -68,12 +59,226 @@ fn run_fixture(fixture_name: &str) -> Result<()> {
         eprintln!("[skip stage-2] {fixture_name}");
         return Ok(());
     }
+
+    let expected_error = meta_field(&meta_yaml, "expected_error");
+    let expected_dynamic = meta_field(&meta_yaml, "expected_dynamic");
     let host_inputs = parse_meta_inputs(&meta_yaml);
+
+    // 1. expected_error: render must fail and message must include
+    //    the declared substring.
+    if let Some(needle) = expected_error {
+        match xl3_core::render::render_from_paths_to_files_with_inputs(
+            &template,
+            &data,
+            &host_inputs,
+        ) {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "fixture {fixture_name}: expected error {needle:?} but render succeeded"
+                ))
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if !msg.contains(&needle) {
+                    return Err(anyhow!(
+                        "fixture {fixture_name}: error message {msg:?} does not contain {needle:?}"
+                    ));
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // 2. expected_dynamic: render must succeed; named cells equal
+    //    the dynamic value (today only — `utc_today`).
+    if let Some(kind) = expected_dynamic {
+        if kind != "utc_today" {
+            eprintln!("[skip dynamic-{kind}] {fixture_name}");
+            return Ok(());
+        }
+        let files = xl3_core::render::render_from_paths_to_files_with_inputs(
+            &template,
+            &data,
+            &host_inputs,
+        )
+        .with_context(|| format!("render fixture {fixture_name}"))?;
+        let first = files
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("fixture {fixture_name}: render produced no files"))?;
+        let actual = read_all_cells_from_bytes(&first.data)?;
+        let dynamic_cells = parse_dynamic_cells(&meta_yaml);
+        let today = utc_today_iso();
+        for (sheet, cell_ref, _format) in &dynamic_cells {
+            let (row, col) = parse_cell_ref(cell_ref).ok_or_else(|| {
+                anyhow!("fixture {fixture_name}: bad dynamic cell ref {cell_ref}")
+            })?;
+            let rows = actual.get(sheet).ok_or_else(|| {
+                anyhow!("fixture {fixture_name}: sheet {sheet:?} missing from output")
+            })?;
+            let got = rows
+                .get(row)
+                .and_then(|r| r.get(col))
+                .cloned()
+                .unwrap_or(Value::Empty);
+            let got_str = got.canonical();
+            if !got_str.starts_with(&today) {
+                return Err(anyhow!(
+                    "fixture {fixture_name}: dynamic cell {sheet}!{cell_ref} = {got_str:?}, expected utc_today {today:?}"
+                ));
+            }
+        }
+        return Ok(());
+    }
+
+    // 3. expected/ directory: multi-file output comparison.
+    if expected_dir.is_dir() {
+        let files = xl3_core::render::render_from_paths_to_files_with_inputs(
+            &template,
+            &data,
+            &host_inputs,
+        )
+        .with_context(|| format!("render fixture {fixture_name}"))?;
+        return compare_multi_file(&files, &expected_dir)
+            .with_context(|| format!("compare fixture {fixture_name}"));
+    }
+
+    // 4. expected.xlsx: single-file path (the common case).
+    if !expected_single.exists() {
+        return Err(anyhow!(
+            "fixture {fixture_name} has no expected.xlsx / expected/ and no expected_error / expected_dynamic — unrecognised fixture shape"
+        ));
+    }
+
     let actual_bytes = render_from_paths_with_inputs(&template, &data, &host_inputs)
         .with_context(|| format!("render fixture {fixture_name}"))?;
 
-    compare_workbooks_stage1(&actual_bytes, &expected)
+    compare_workbooks_stage1(&actual_bytes, &expected_single)
         .with_context(|| format!("compare fixture {fixture_name}"))
+}
+
+fn meta_field(yaml: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    yaml.lines()
+        .map(str::trim_start)
+        .find(|l| l.starts_with(&prefix))
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, v)| strip_yaml_scalar(v))
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_dynamic_cells(yaml: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    let (mut sheet, mut cell, mut fmt): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = (None, None, None);
+    for line in yaml.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if indent == 0 && !trimmed.is_empty() {
+            in_block = trimmed.starts_with("dynamic_cells:");
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        let body = trimmed.trim_start_matches('-').trim_start();
+        if let Some(rest) = body.strip_prefix("sheet:") {
+            // start of new entry
+            if let (Some(s), Some(c)) = (sheet.take(), cell.take()) {
+                out.push((s, c, fmt.take().unwrap_or_default()));
+            }
+            sheet = Some(strip_yaml_scalar(rest));
+        } else if let Some(rest) = body.strip_prefix("cell:") {
+            cell = Some(strip_yaml_scalar(rest));
+        } else if let Some(rest) = body.strip_prefix("format:") {
+            fmt = Some(strip_yaml_scalar(rest));
+        }
+    }
+    if let (Some(s), Some(c)) = (sheet, cell) {
+        out.push((s, c, fmt.unwrap_or_default()));
+    }
+    out
+}
+
+fn utc_today_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs / 86_400;
+    // Convert days since 1970-01-01 (UTC) to civil date (Howard
+    // Hinnant's algorithm — matches functions.rs).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+fn parse_cell_ref(s: &str) -> Option<(usize, usize)> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut col: usize = 0;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        let c = bytes[i].to_ascii_uppercase();
+        col = col * 26 + (c - b'A' + 1) as usize;
+        i += 1;
+    }
+    if col == 0 || i == bytes.len() {
+        return None;
+    }
+    let row: usize = std::str::from_utf8(&bytes[i..]).ok()?.parse().ok()?;
+    if row == 0 {
+        return None;
+    }
+    Some((row - 1, col - 1))
+}
+
+fn compare_multi_file(files: &[xl3_core::OutputFile], expected_dir: &Path) -> Result<()> {
+    let mut expected_files: Vec<std::path::PathBuf> = std::fs::read_dir(expected_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e == "xlsx").unwrap_or(false))
+        .collect();
+    expected_files.sort();
+    if files.len() != expected_files.len() {
+        return Err(anyhow!(
+            "file count mismatch — expected {}, got {}",
+            expected_files.len(),
+            files.len()
+        ));
+    }
+    // Match by filename (basename).
+    use std::collections::HashMap;
+    let actual_by_name: HashMap<&str, &[u8]> = files
+        .iter()
+        .map(|f| (f.filename.as_str(), f.data.as_slice()))
+        .collect();
+    for expected_path in &expected_files {
+        let name = expected_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| anyhow!("bad expected filename"))?;
+        let actual_bytes = actual_by_name.get(name).ok_or_else(|| {
+            anyhow!(
+                "expected file {name} missing from actual output (got {:?})",
+                actual_by_name.keys().collect::<Vec<_>>()
+            )
+        })?;
+        compare_workbooks_stage1(actual_bytes, expected_path)
+            .with_context(|| format!("compare file {name}"))?;
+    }
+    Ok(())
 }
 
 fn compare_workbooks_stage1(actual_bytes: &[u8], expected_path: &Path) -> Result<()> {
@@ -579,6 +784,24 @@ fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
 
+#[test]
+fn fixture_017_source_sheet_prefix_no_match_error() {
+    run_fixture("017-source-sheet-prefix-no-match-error")
+        .expect("fixture 017 should surface the expected error message");
+}
+
+#[test]
+fn fixture_023_today_utc_dynamic() {
+    run_fixture("023-today-utc-dynamic")
+        .expect("fixture 023 should produce today's UTC date in the dynamic cell");
+}
+
+// fixture 006 (filename-forbidden-chars) exercises both filename
+// sanitisation (done — see render::sanitize_filename) and per-file
+// rendering with `output_file_pattern` group keys injected into the
+// static ctx (pending — needs the file-group splitter). Re-enable once
+// the file-group splitter lands.
+
 /// Walk every fixture, classify pass / fail / skip, and print a summary.
 /// Always passes — purely informational. The targeted `fixture_NNN_*`
 /// tests above are the ones that gate the build; this one is what we use
@@ -603,6 +826,12 @@ fn fixture_corpus_overview() {
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut skip_no_expected = 0usize;
+    let mut error_pass = 0usize;
+    let mut error_fail = 0usize;
+    let mut dynamic_pass = 0usize;
+    let mut dynamic_fail = 0usize;
+    let mut multifile_pass = 0usize;
+    let mut multifile_fail = 0usize;
     let mut fail_examples: Vec<(String, String)> = Vec::new();
 
     for name in &names {
@@ -615,12 +844,35 @@ fn fixture_corpus_overview() {
             skip_no_expected += 1;
             continue;
         }
+        let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
+        // The non-cell-comparison fixture shapes (error / dynamic /
+        // multi-output) get their own buckets — run_fixture knows how
+        // to evaluate each.
         if !expected.exists() {
-            // Error / dynamic / multi-output fixtures: skip for now.
+            if meta_field(&meta, "expected_error").is_some() {
+                match run_fixture(name) {
+                    Ok(()) => error_pass += 1,
+                    Err(_) => error_fail += 1,
+                }
+                continue;
+            }
+            if meta_field(&meta, "expected_dynamic").is_some() {
+                match run_fixture(name) {
+                    Ok(()) => dynamic_pass += 1,
+                    Err(_) => dynamic_fail += 1,
+                }
+                continue;
+            }
+            if dir.join("expected").is_dir() {
+                match run_fixture(name) {
+                    Ok(()) => multifile_pass += 1,
+                    Err(_) => multifile_fail += 1,
+                }
+                continue;
+            }
             skip_no_expected += 1;
             continue;
         }
-        let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
         // Stage 2 fixtures are out of scope for cell-value comparison.
         if meta
             .lines()
@@ -652,6 +904,15 @@ fn fixture_corpus_overview() {
     eprintln!(
         "conformance corpus: {} fixtures, pass={pass} fail={fail} skip(no expected)={skip_no_expected}",
         names.len()
+    );
+    eprintln!(
+        "  error fixtures:     pass={error_pass} fail={error_fail}"
+    );
+    eprintln!(
+        "  dynamic fixtures:   pass={dynamic_pass} fail={dynamic_fail}"
+    );
+    eprintln!(
+        "  multi-file fixtures: pass={multifile_pass} fail={multifile_fail}"
     );
     if !fail_examples.is_empty() {
         eprintln!("first failures:");
