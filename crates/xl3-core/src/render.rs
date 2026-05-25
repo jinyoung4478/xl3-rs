@@ -33,7 +33,8 @@ pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
         .map(str::to_string)
         .or_else(|| source_reader.first_sheet())
         .ok_or_else(|| anyhow::anyhow!("no source_sheet in __config__ and source workbook is empty"))?;
-    let source = source_reader.read(&source_sheet)?;
+    let source_table = plan.config.source_table();
+    let source = source_reader.read(&source_sheet, &source_table)?;
     render(&plan, &source)
 }
 

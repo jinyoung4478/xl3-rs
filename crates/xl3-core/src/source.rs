@@ -11,6 +11,7 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
+use crate::plan::SourceTable;
 use crate::value::Value;
 
 #[derive(Debug, Clone)]
@@ -21,7 +22,7 @@ pub struct SourceData {
 }
 
 pub trait SourceReader {
-    fn read(&mut self, sheet: &str) -> Result<SourceData>;
+    fn read(&mut self, sheet: &str, table: &SourceTable) -> Result<SourceData>;
 }
 
 /// Default `SourceReader` backed by `calamine`. Assumes the source is
@@ -58,14 +59,13 @@ fn is_blank_value(v: &Value) -> bool {
 }
 
 impl SourceReader for CalamineSourceReader {
-    fn read(&mut self, sheet: &str) -> Result<SourceData> {
+    fn read(&mut self, sheet: &str, table: &SourceTable) -> Result<SourceData> {
         let range = self
             .workbook
             .worksheet_range(sheet)
             .with_context(|| format!("read source sheet {sheet:?}"))?;
 
-        let (rows, cols) = range.get_size();
-        if rows == 0 {
+        if range.get_size() == (0, 0) {
             return Ok(SourceData {
                 name: sheet.to_string(),
                 headers: vec![],
@@ -73,13 +73,64 @@ impl SourceReader for CalamineSourceReader {
             });
         }
 
-        // Header row: first row, left-to-right, strings only. Blanks end
-        // the header span (xl3 convention — header is a contiguous run).
+        // calamine returns a `Range` whose `(0, 0)` is the first *used*
+        // cell, not sheet A1. The xl3 conventions (and the SourceTable
+        // values we receive) are in absolute 1-based A1 coordinates, so
+        // we read via `Range::get_value(absolute)` and never use the
+        // relative `get`. `end()` gives the absolute bottom-right (also
+        // 0-based) so we know how far down to walk.
+        let (last_row_abs, last_col_abs) = range
+            .end()
+            .map(|(r, c)| (r as usize, c as usize))
+            .unwrap_or((0, 0));
+
+        // Resolve the (header_row, data_row_range, col_range) tuple
+        // from the SourceTable. All indices below are absolute, 0-based.
+        let (header_row, data_first, data_last_excl, col_first, col_last_excl) = match table {
+            SourceTable::HeaderRow(n) => {
+                let header = n.saturating_sub(1);
+                let row_end_excl = last_row_abs + 1;
+                let col_end_excl = last_col_abs + 1;
+                (header, header + 1, row_end_excl, 0usize, col_end_excl)
+            }
+            SourceTable::Range {
+                first_row,
+                last_row,
+                first_col,
+                last_col,
+            } => {
+                let header = first_row.saturating_sub(1);
+                let data_first = header + 1;
+                let data_last_excl = match last_row {
+                    Some(lr) => (*lr).min(last_row_abs + 1),
+                    None => last_row_abs + 1,
+                };
+                let col_first0 = first_col.saturating_sub(1);
+                let col_last_excl0 = match last_col {
+                    Some(lc) => (*lc).min(last_col_abs + 1),
+                    None => last_col_abs + 1,
+                };
+                (header, data_first, data_last_excl, col_first0, col_last_excl0)
+            }
+        };
+
+        if header_row > last_row_abs {
+            return Err(anyhow!(
+                "source sheet {sheet:?} header row {} is past the last used row {}",
+                header_row + 1,
+                last_row_abs + 1
+            ));
+        }
+
+        // Header span: cells in (header_row, col_first..col_last_excl)
+        // up until the first blank — xl3 treats the header as a
+        // contiguous run.
         let mut headers: Vec<String> = Vec::new();
-        for c in 0..cols {
-            match range.get((0, c)) {
+        for c in col_first..col_last_excl {
+            let cell = range.get_value((header_row as u32, c as u32));
+            match cell {
                 Some(CData::String(s)) if !s.is_empty() => headers.push(s.clone()),
-                Some(CData::Empty) | None => break,
+                None | Some(CData::Empty) => break,
                 Some(other) => {
                     bail!(
                         "source header at column {c} is not a string: {other:?} (xl3 expects text headers)"
@@ -92,13 +143,14 @@ impl SourceReader for CalamineSourceReader {
             return Err(anyhow!("source sheet {sheet:?} has no header row"));
         }
 
-        let mut data_rows = Vec::with_capacity(rows.saturating_sub(1));
-        for r in 1..rows {
+        let mut data_rows = Vec::with_capacity(data_last_excl.saturating_sub(data_first));
+        for r in data_first..data_last_excl {
             let mut record = HashMap::with_capacity(headers.len());
             let mut row_blank = true;
-            for (c, header) in headers.iter().enumerate() {
+            for (i, header) in headers.iter().enumerate() {
+                let c = col_first + i;
                 let v = range
-                    .get((r, c))
+                    .get_value((r as u32, c as u32))
                     .map(Value::from_calamine)
                     .unwrap_or(Value::Empty);
                 if !is_blank_value(&v) {
@@ -106,10 +158,6 @@ impl SourceReader for CalamineSourceReader {
                 }
                 record.insert(header.clone(), v);
             }
-            // ADR-0007: a row whose every cell is empty *or* whitespace-only
-            // is skipped — even if it sits between two non-blank rows. xl3
-            // does not terminate the source on a blank line; the corpus
-            // explicitly covers "blank row in the middle, keep later rows".
             if row_blank {
                 continue;
             }

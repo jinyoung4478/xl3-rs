@@ -236,6 +236,21 @@ fn fixture_053_empty_row_skip_whitespace_only() {
 }
 
 #[test]
+fn fixture_028_source_table_row_shorthand() {
+    run_fixture("028-source-table-row-shorthand").expect("fixture 028 should pass");
+}
+
+#[test]
+fn fixture_030_source_table_finite_range() {
+    run_fixture("030-source-table-finite-range").expect("fixture 030 should pass");
+}
+
+#[test]
+fn fixture_029_source_table_open_range() {
+    run_fixture("029-source-table-open-range").expect("fixture 029 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
@@ -359,6 +374,8 @@ fn fixture_failure_taxonomy() {
                 let msg = format!("{e}");
                 let bucket = if msg.contains("'@'") || msg.contains("@filter") || msg.contains("@repeat") {
                     "directive-at"
+                } else if msg.contains("Source[") || msg.contains("source") {
+                    "source-or-cross-source"
                 } else if msg.contains("unknown function") {
                     let fname = msg
                         .split("unknown function ")

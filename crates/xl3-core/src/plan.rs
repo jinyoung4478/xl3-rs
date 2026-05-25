@@ -36,6 +36,96 @@ impl ConfigMeta {
     pub fn output_file_pattern(&self) -> Option<&str> {
         self.get("output_file_pattern")
     }
+    /// Parse the `source_table` config value (xl3 evaluation.md
+    /// "Source Data Model"). Returns the default — first row as
+    /// header, data continues to the end of the sheet — when the
+    /// value is missing or unrecognised.
+    pub fn source_table(&self) -> SourceTable {
+        self.get("source_table")
+            .map(parse_source_table)
+            .unwrap_or(SourceTable::HeaderRow(1))
+    }
+}
+
+/// How the source sheet is interpreted.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceTable {
+    /// `source_table: 1` (default) or `source_table: 3` — the named
+    /// row (1-based) is the header. Data rows continue until the end
+    /// of the sheet (modulo blank-row handling per ADR-0007).
+    HeaderRow(usize),
+    /// `source_table: B3:D4` (closed) or `B3:D` / `B3` (open-ended) —
+    /// the first row is the header, columns are constrained, and the
+    /// bottom row is either explicit (`last_row = Some(...)`) or
+    /// "until the end of the used range" (`None`). Likewise
+    /// `last_col` may be `None` to mean "until the rightmost used
+    /// column".
+    Range {
+        first_row: usize,         // 1-based
+        last_row: Option<usize>,  // 1-based, inclusive; None = open-ended
+        first_col: usize,         // 1-based
+        last_col: Option<usize>,  // 1-based, inclusive; None = open-ended
+    },
+}
+
+fn parse_source_table(raw: &str) -> SourceTable {
+    let s = raw.trim();
+    if let Ok(n) = s.parse::<usize>() {
+        return SourceTable::HeaderRow(n.max(1));
+    }
+    if let Some((a, b)) = s.split_once(':') {
+        let lhs = parse_a1_part(a.trim());
+        let rhs = parse_a1_part(b.trim());
+        if let (Some((Some(r1), Some(c1))), Some((r2, c2))) = (lhs, rhs) {
+            let (first_row, last_row) = match r2 {
+                Some(r2) => (r1.min(r2), Some(r1.max(r2))),
+                None => (r1, None),
+            };
+            let (first_col, last_col) = match c2 {
+                Some(c2) => (c1.min(c2), Some(c1.max(c2))),
+                None => (c1, None),
+            };
+            return SourceTable::Range {
+                first_row,
+                last_row,
+                first_col,
+                last_col,
+            };
+        }
+    }
+    SourceTable::HeaderRow(1)
+}
+
+/// Parse one half of an A1 range — accepts `B3` (cell), `B` (column
+/// only) or `3` (row only). Returns `(row?, col?)` with 1-based
+/// indices and `None` for whichever component wasn't present.
+fn parse_a1_part(s: &str) -> Option<(Option<usize>, Option<usize>)> {
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut col = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        let c = bytes[i].to_ascii_uppercase();
+        col = col * 26 + (c - b'A' + 1) as usize;
+        i += 1;
+    }
+    let col_opt = if col == 0 { None } else { Some(col) };
+    let row_opt = if i == bytes.len() {
+        None
+    } else {
+        let row: usize = std::str::from_utf8(&bytes[i..]).ok()?.parse().ok()?;
+        if row == 0 {
+            None
+        } else {
+            Some(row)
+        }
+    };
+    if col_opt.is_none() && row_opt.is_none() {
+        return None;
+    }
+    Some((row_opt, col_opt))
 }
 
 #[derive(Debug, Clone)]
