@@ -360,6 +360,18 @@ fn fixture_132_group_single_level_subtotal() {
 }
 
 #[test]
+fn fixture_133_group_two_level_nested_subtotal() {
+    run_fixture("133-group-two-level-nested-subtotal")
+        .expect("fixture 133 should pass");
+}
+
+#[test]
+fn fixture_134_group_grand_total_via_outermost_subtotal() {
+    run_fixture("134-group-grand-total-via-outermost-subtotal")
+        .expect("fixture 134 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

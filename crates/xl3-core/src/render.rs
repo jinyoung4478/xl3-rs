@@ -110,45 +110,38 @@ fn render_sheet(
                 let block_rows = resolve_block_rows(directives, source, named_sources);
                 let effective =
                     apply_directives(&block_rows, directives, lists_value, named_sources)?;
-                let group_field = directives.iter().find_map(|d| match d {
-                    Directive::Group(f) => Some(f.clone()),
-                    _ => None,
-                });
-                let groups = partition_into_groups(&effective, group_field.as_deref());
+                let group_fields: Vec<String> = directives
+                    .iter()
+                    .find_map(|d| match d {
+                        Directive::Group(fs) => Some(fs.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
 
                 let mut global_idx = 0usize;
-                for group in &groups {
-                    let group_handle: Arc<Vec<HashMap<String, Value>>> =
-                        Arc::new(group.clone());
-                    for source_row in group {
-                        global_idx += 1;
-                        let mut ctx: EvalContext = source_row.clone();
-                        inject_rows(&mut ctx, Arc::clone(&rows_handle));
-                        inject_rownum(&mut ctx, global_idx);
-                        ctx.insert("__inputs__".to_string(), inputs_value.clone());
-                        ctx.insert("__lists__".to_string(), lists_value.clone());
-                        inject_named_sources(&mut ctx, named_sources);
-                        rows.push(render_template_row(cells, &ctx)?);
-                    }
-                    // Subtotal rows are emitted after each group's last
-                    // data row. They share the group's rows handle (not
-                    // the whole block) so their aggregates are scoped.
-                    if !subtotal_rows.is_empty() && group_field.is_some() {
-                        for subtotal_cells in subtotal_rows {
-                            rows.push(render_subtotal_row(
-                                subtotal_cells,
-                                &group_handle,
-                                inputs_value,
-                                lists_value,
-                                named_sources,
-                            )?);
+                let mut emit_expansion =
+                    |group_rows: &Vec<HashMap<String, Value>>,
+                     rows: &mut Vec<Vec<Value>>,
+                     global_idx: &mut usize|
+                     -> Result<()> {
+                        for source_row in group_rows {
+                            *global_idx += 1;
+                            let mut ctx: EvalContext = source_row.clone();
+                            inject_rows(&mut ctx, Arc::clone(&rows_handle));
+                            inject_rownum(&mut ctx, *global_idx);
+                            ctx.insert("__inputs__".to_string(), inputs_value.clone());
+                            ctx.insert("__lists__".to_string(), lists_value.clone());
+                            inject_named_sources(&mut ctx, named_sources);
+                            rows.push(render_template_row(cells, &ctx)?);
                         }
-                    }
-                }
-                // No `@group` → render any subtotal rows once at the
-                // very end of the block over all rows.
-                if !subtotal_rows.is_empty() && group_field.is_none() {
+                        Ok(())
+                    };
+
+                if group_fields.is_empty() {
+                    // No grouping: emit every row, then any trailing
+                    // subtotal rows once over the whole block.
+                    emit_expansion(&effective, &mut rows, &mut global_idx)?;
                     for subtotal_cells in subtotal_rows {
                         rows.push(render_subtotal_row(
                             subtotal_cells,
@@ -158,6 +151,20 @@ fn render_sheet(
                             named_sources,
                         )?);
                     }
+                } else {
+                    render_grouped(
+                        &effective,
+                        &group_fields,
+                        0,
+                        cells,
+                        subtotal_rows,
+                        &mut rows,
+                        &mut global_idx,
+                        &rows_handle,
+                        inputs_value,
+                        lists_value,
+                        named_sources,
+                    )?;
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
@@ -231,6 +238,72 @@ fn partition_into_groups(
         }
     }
     out
+}
+
+/// Recursive nested-group emission. ADR-0038:
+/// - groups are nested left-to-right (`@group [Outer], [Inner]`)
+/// - leaf groups (deepest level) emit their data rows
+/// - on the way back up, each completed group emits one subtotal row
+///   per attached `subtotal_rows` slot, where slot index 0 is the
+///   innermost level's row, slot 1 is the next outer, etc.
+fn render_grouped(
+    rows: &[HashMap<String, Value>],
+    group_fields: &[String],
+    depth: usize,
+    cells: &[CellSource],
+    subtotal_rows: &[Vec<CellSource>],
+    out_rows: &mut Vec<Vec<Value>>,
+    global_idx: &mut usize,
+    rows_handle: &Arc<Vec<HashMap<String, Value>>>,
+    inputs_value: &Value,
+    lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
+) -> Result<()> {
+    if depth == group_fields.len() {
+        // Leaf — emit every row through the expansion template.
+        for source_row in rows {
+            *global_idx += 1;
+            let mut ctx: EvalContext = source_row.clone();
+            inject_rows(&mut ctx, Arc::clone(rows_handle));
+            inject_rownum(&mut ctx, *global_idx);
+            ctx.insert("__inputs__".to_string(), inputs_value.clone());
+            ctx.insert("__lists__".to_string(), lists_value.clone());
+            inject_named_sources(&mut ctx, named_sources);
+            out_rows.push(render_template_row(cells, &ctx)?);
+        }
+        return Ok(());
+    }
+    let groups = partition_into_groups(rows, Some(&group_fields[depth]));
+    for group in &groups {
+        render_grouped(
+            group,
+            group_fields,
+            depth + 1,
+            cells,
+            subtotal_rows,
+            out_rows,
+            global_idx,
+            rows_handle,
+            inputs_value,
+            lists_value,
+            named_sources,
+        )?;
+        // Subtotal slot index for *this* level (the level we're closing).
+        // Innermost = group_fields.len() - 1 → slot 0.
+        // Outermost = depth 0 → slot group_fields.len() - 1.
+        let slot = group_fields.len() - 1 - depth;
+        if slot < subtotal_rows.len() {
+            let group_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(group.clone());
+            out_rows.push(render_subtotal_row(
+                &subtotal_rows[slot],
+                &group_handle,
+                inputs_value,
+                lists_value,
+                named_sources,
+            )?);
+        }
+    }
+    Ok(())
 }
 
 fn render_subtotal_row(
