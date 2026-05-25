@@ -453,6 +453,11 @@ fn fixture_121_source_merged_header() {
     run_fixture("121-source-merged-header").expect("fixture 121 should pass");
 }
 
+#[test]
+fn fixture_124_source_2d_merge_header() {
+    run_fixture("124-source-2d-merge-header").expect("fixture 124 should pass");
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {

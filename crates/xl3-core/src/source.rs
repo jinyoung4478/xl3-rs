@@ -157,14 +157,40 @@ impl SourceReader for CalamineSourceReader {
         }
 
         // Map each header-row column that starts a horizontal merge to
-        // the end column of its merge run (ADR-0033). Vertical merges
-        // and merges on other rows are ignored — only horizontal
-        // header merges affect the "logical column" mapping.
+        // the end column of its merge run (ADR-0033). A 2D merge — one
+        // that covers multiple rows AND multiple columns — is the same
+        // logical column as its 1D counterpart, so we treat any merge
+        // whose master sits on the header row as a horizontal run.
         let merge_master_to_end: HashMap<usize, usize> = header_merges
             .iter()
-            .filter(|d| d.start.0 as usize == header_row && d.start.0 == d.end.0)
+            .filter(|d| d.start.0 as usize == header_row)
             .map(|d| (d.start.1 as usize, d.end.1 as usize))
             .collect();
+        // Reverse map: any cell *inside* a merge that isn't the master
+        // borrows the master's value (ADR-0033 vertical slave rule).
+        // Built once and reused by header scan + data row lookups.
+        let slave_to_master: HashMap<(usize, usize), (u32, u32)> = header_merges
+            .iter()
+            .flat_map(|d| {
+                let master = (d.start.0, d.start.1);
+                let mut out: Vec<((usize, usize), (u32, u32))> = Vec::new();
+                for r in d.start.0..=d.end.0 {
+                    for c in d.start.1..=d.end.1 {
+                        if (r, c) != master {
+                            out.push(((r as usize, c as usize), master));
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
+        let cell_at = |r: usize, c: usize| -> Option<&CData> {
+            if let Some(&(mr, mc)) = slave_to_master.get(&(r, c)) {
+                range.get_value((mr, mc))
+            } else {
+                range.get_value((r as u32, c as u32))
+            }
+        };
 
         // Header span: cells in (header_row, col_first..col_last_excl)
         // up until the first blank. A merged-header master claims its
@@ -173,7 +199,7 @@ impl SourceReader for CalamineSourceReader {
         let mut header_cols: Vec<usize> = Vec::new();
         let mut c = col_first;
         while c < col_last_excl {
-            let cell = range.get_value((header_row as u32, c as u32));
+            let cell = cell_at(header_row, c);
             match cell {
                 Some(CData::String(s)) if !s.is_empty() => {
                     headers.push(s.clone());
@@ -203,8 +229,7 @@ impl SourceReader for CalamineSourceReader {
             let mut row_blank = true;
             for (i, header) in headers.iter().enumerate() {
                 let c = header_cols[i];
-                let v = range
-                    .get_value((r as u32, c as u32))
+                let v = cell_at(r, c)
                     .map(Value::from_calamine)
                     .unwrap_or(Value::Empty);
                 if !is_blank_value(&v) {
