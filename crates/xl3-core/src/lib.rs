@@ -16,6 +16,7 @@
 
 pub mod directives;
 pub mod eval;
+pub mod functions;
 pub mod output;
 pub mod plan;
 pub mod render;
