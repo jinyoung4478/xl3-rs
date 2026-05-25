@@ -333,6 +333,52 @@ pub fn serial_to_iso_date(serial: f64) -> Option<String> {
     Some(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day))
 }
 
+/// Parse the ADR-0017 canonical form (`YYYY-MM-DD` or
+/// `YYYY-MM-DDTHH:MM:SS`) back into an Excel serial. Returns `None`
+/// for any other shape so the caller can fall back to a numeric parse.
+pub fn iso_string_to_serial(s: &str) -> Option<f64> {
+    let b = s.as_bytes();
+    if b.len() < 10 {
+        return None;
+    }
+    if b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let year: i32 = std::str::from_utf8(&b[..4]).ok()?.parse().ok()?;
+    let month: u32 = std::str::from_utf8(&b[5..7]).ok()?.parse().ok()?;
+    let day: u32 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
+    let base = date_to_excel_serial(year, month, day).ok()?;
+    if b.len() == 10 {
+        return Some(base);
+    }
+    if b.len() >= 19 && b[10] == b'T' && b[13] == b':' && b[16] == b':' {
+        let hour: u32 = std::str::from_utf8(&b[11..13]).ok()?.parse().ok()?;
+        let minute: u32 = std::str::from_utf8(&b[14..16]).ok()?.parse().ok()?;
+        let second: u32 = std::str::from_utf8(&b[17..19]).ok()?.parse().ok()?;
+        let frac = (hour * 3600 + minute * 60 + second) as f64 / SECONDS_PER_DAY;
+        return Some(base + frac);
+    }
+    None
+}
+
+/// Render an Excel serial as ADR-0017 canonical: `YYYY-MM-DD` when the
+/// time component is exactly midnight, `YYYY-MM-DDTHH:MM:SS` otherwise.
+pub fn serial_to_iso_canonical(serial: f64) -> Option<String> {
+    if !serial.is_finite() {
+        return None;
+    }
+    let d = excel_serial_to_datetime(serial).ok()?;
+    let date = format!("{:04}-{:02}-{:02}", d.year, d.month, d.day);
+    if d.hour == 0 && d.minute == 0 && d.second == 0 {
+        Some(date)
+    } else {
+        Some(format!(
+            "{date}T{:02}:{:02}:{:02}",
+            d.hour, d.minute, d.second
+        ))
+    }
+}
+
 fn excel_serial_to_datetime(serial: f64) -> Result<ExcelDateTime> {
     if !serial.is_finite() {
         bail!("date serial must be finite");

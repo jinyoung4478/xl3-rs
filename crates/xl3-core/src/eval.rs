@@ -837,14 +837,18 @@ pub(crate) fn coerce_number(v: &Value) -> Result<f64> {
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         Value::Empty => Ok(0.0),
         Value::String(s) => {
-            // xl3 ADR allows numeric strings with thousands separators
-            // and optional surrounding whitespace, e.g. "1,234.5" → 1234.5.
-            // Strip ASCII commas before parsing. Empty or whitespace-only
-            // strings coerce to 0, matching the Empty-cell rule above.
             let trimmed = s.trim();
             if trimmed.is_empty() {
                 return Ok(0.0);
             }
+            // Date strings (ADR-0017 canonical form) come in via source
+            // numFmt-driven coercion; recover the serial so date math /
+            // YEAR / MONTH / DAY etc. keep working unchanged.
+            if let Some(serial) = crate::functions::iso_string_to_serial(trimmed) {
+                return Ok(serial);
+            }
+            // xl3 ADR-0009 allows numeric strings with thousands
+            // separators, e.g. "1,234.5" → 1234.5.
             let stripped: String = trimmed.chars().filter(|c| *c != ',').collect();
             stripped
                 .parse::<f64>()

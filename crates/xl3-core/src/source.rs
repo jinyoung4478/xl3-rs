@@ -6,12 +6,13 @@
 //! lands later.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
 use crate::plan::SourceTable;
+use crate::styles::{self, NumFmtKind, TemplateStyles};
 use crate::value::Value;
 
 #[derive(Debug, Clone)]
@@ -30,13 +31,29 @@ pub trait SourceReader {
 /// (xl3 0.x's `source_table = 1` convention.)
 pub struct CalamineSourceReader {
     workbook: Xlsx<std::io::BufReader<std::fs::File>>,
+    /// Source workbook styles — only parsed lazily on first need.
+    /// Used to render numeric cells whose numFmt is a date format as
+    /// canonical ISO strings (ADR-0017).
+    path: PathBuf,
+    styles: Option<TemplateStyles>,
 }
 
 impl CalamineSourceReader {
     pub fn open(path: &Path) -> Result<Self> {
         let workbook: Xlsx<_> = open_workbook(path)
             .with_context(|| format!("open data workbook at {}", path.display()))?;
-        Ok(CalamineSourceReader { workbook })
+        Ok(CalamineSourceReader {
+            workbook,
+            path: path.to_path_buf(),
+            styles: None,
+        })
+    }
+
+    fn ensure_styles(&mut self) -> &TemplateStyles {
+        if self.styles.is_none() {
+            self.styles = Some(styles::parse_template_styles(&self.path).unwrap_or_default());
+        }
+        self.styles.as_ref().unwrap()
     }
 
     /// Convenience: when only one source is named in `__config__`, load
@@ -86,8 +103,10 @@ pub fn is_blank_value(v: &Value) -> bool {
 
 impl SourceReader for CalamineSourceReader {
     fn read(&mut self, sheet: &str, table: &SourceTable) -> Result<SourceData> {
-        // Pull merge information *before* worksheet_range so the two
-        // `&mut self.workbook` borrows don't overlap.
+        // Styles & merge info — pulled before worksheet_range so the
+        // two `&mut self.workbook` borrows don't overlap.
+        self.ensure_styles();
+        let styles = self.styles.clone().unwrap_or_default();
         let header_merges = self
             .workbook
             .worksheet_merge_cells(sheet)
@@ -247,6 +266,9 @@ impl SourceReader for CalamineSourceReader {
                 let v = cell_at(r, c)
                     .map(Value::from_calamine)
                     .unwrap_or(Value::Empty);
+                let _ = (&styles, sheet);
+                // (ADR-0017 source-side date canonicalisation needs a
+                // first-class Value::DateNumber variant — deferred.)
                 if !is_blank_value(&v) {
                     row_blank = false;
                 }

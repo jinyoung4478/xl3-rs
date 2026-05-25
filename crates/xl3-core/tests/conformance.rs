@@ -515,12 +515,6 @@ fn fixture_143_block_shared_formula_side_cells() {
         .expect("fixture 143 should pass");
 }
 
-#[test]
-fn debug_fixture_068() {
-    if let Err(e) = run_fixture("068-input-select-host-supplied") {
-        eprintln!("[dbg068] {e:#}");
-    }
-}
 
 
 #[test]
