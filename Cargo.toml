@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/xl3-core"]
-# xl3-wasm is added in Phase 2.
+members = ["crates/xl3-core", "crates/xl3-wasm"]
 
 [workspace.package]
 edition = "2021"

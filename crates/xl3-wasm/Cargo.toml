@@ -1,0 +1,29 @@
+[package]
+name = "xl3-wasm"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "WebAssembly wrapper around xl3-core for browser / Node consumers"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+xl3-core = { path = "../xl3-core" }
+# rust_xlsxwriter calls `SystemTime::now()` for workbook metadata, which
+# panics on wasm32-unknown-unknown. Pulling it in here with the `wasm`
+# feature routes that call through `js_sys::Date` instead. cargo unifies
+# this with xl3-core's transitive dependency.
+rust_xlsxwriter = { version = "0.95", features = ["wasm"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+anyhow = "1"
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = []
+debug = ["console_error_panic_hook"]
