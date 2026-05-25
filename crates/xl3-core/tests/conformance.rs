@@ -458,6 +458,11 @@ fn fixture_124_source_2d_merge_header() {
     run_fixture("124-source-2d-merge-header").expect("fixture 124 should pass");
 }
 
+#[test]
+fn fixture_126_date_arithmetic_functions() {
+    run_fixture("126-date-arithmetic-functions").expect("fixture 126 should pass");
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {
