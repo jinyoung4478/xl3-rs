@@ -230,6 +230,12 @@ fn fixture_012_text_number_format() {
 }
 
 #[test]
+fn fixture_053_empty_row_skip_whitespace_only() {
+    run_fixture("053-empty-row-skip-whitespace-only")
+        .expect("fixture 053 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

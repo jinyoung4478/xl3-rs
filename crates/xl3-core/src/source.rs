@@ -45,6 +45,18 @@ impl CalamineSourceReader {
     }
 }
 
+/// True if a value should be treated as blank by the source reader.
+/// Matches xl3's ADR-0007: explicit `Empty` plus strings that contain
+/// only whitespace. Other types — numbers (including 0), booleans
+/// (including `false`) — are NOT blank.
+fn is_blank_value(v: &Value) -> bool {
+    match v {
+        Value::Empty => true,
+        Value::String(s) => s.chars().all(|c| c.is_whitespace()),
+        _ => false,
+    }
+}
+
 impl SourceReader for CalamineSourceReader {
     fn read(&mut self, sheet: &str) -> Result<SourceData> {
         let range = self
@@ -83,20 +95,23 @@ impl SourceReader for CalamineSourceReader {
         let mut data_rows = Vec::with_capacity(rows.saturating_sub(1));
         for r in 1..rows {
             let mut record = HashMap::with_capacity(headers.len());
-            let mut any_value = false;
+            let mut row_blank = true;
             for (c, header) in headers.iter().enumerate() {
                 let v = range
                     .get((r, c))
                     .map(Value::from_calamine)
                     .unwrap_or(Value::Empty);
-                if !matches!(v, Value::Empty) {
-                    any_value = true;
+                if !is_blank_value(&v) {
+                    row_blank = false;
                 }
                 record.insert(header.clone(), v);
             }
-            // Blank rows terminate the source (xl3 convention).
-            if !any_value {
-                break;
+            // ADR-0007: a row whose every cell is empty *or* whitespace-only
+            // is skipped — even if it sits between two non-blank rows. xl3
+            // does not terminate the source on a blank line; the corpus
+            // explicitly covers "blank row in the middle, keep later rows".
+            if row_blank {
+                continue;
             }
             data_rows.push(record);
         }
