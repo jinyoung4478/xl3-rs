@@ -220,6 +220,16 @@ fn fixture_045_list_sheet_not_in_filter() {
 }
 
 #[test]
+fn fixture_011_text_date_format() {
+    run_fixture("011-text-date-format").expect("fixture 011 should pass");
+}
+
+#[test]
+fn fixture_012_text_number_format() {
+    run_fixture("012-text-number-format").expect("fixture 012 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

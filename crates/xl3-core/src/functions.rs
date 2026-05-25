@@ -5,6 +5,21 @@ use anyhow::{bail, Result};
 use crate::eval::{coerce_number, is_truthy};
 use crate::value::Value;
 
+const SECONDS_PER_DAY: f64 = 86_400.0;
+const EXCEL_EPOCH_DAYS: i64 = -25_569;
+const EXCEL_FAKE_LEAP_DAY_SERIAL: i64 = 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExcelDateTime {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    fake_leap_day: bool,
+}
+
 pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
     // xl3 fixture 116: function names are case-insensitive (IF == if).
     let upper = name.to_ascii_uppercase();
@@ -33,6 +48,12 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
             }
             Ok(Value::Number(coerce_number(&args[0])?.abs()))
         }
+        "TEXT" => text(args),
+        "YEAR" => year(args),
+        "MONTH" => month(args),
+        "DAY" => day(args),
+        "EOMONTH" => eomonth(args),
+        "EDATE" => edate(args),
         "UPPER" => {
             if args.len() != 1 {
                 bail!("UPPER expects 1 argument, got {}", args.len());
@@ -155,6 +176,82 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
     }
 }
 
+/// TEXT(value, format) returns a string rendered with supported date, number, or @ formats.
+fn text(args: &[Value]) -> Result<Value> {
+    if args.len() != 2 {
+        bail!("TEXT expects 2 arguments, got {}", args.len());
+    }
+    let fmt = args[1].canonical();
+    if let Value::String(s) = &args[0] {
+        if fmt.contains('@') {
+            return Ok(Value::String(fmt.replace('@', s)));
+        }
+    }
+    if is_text_date_format(&fmt) {
+        if let Value::Number(n) = args[0] {
+            let d = excel_serial_to_datetime(n)?;
+            return Ok(Value::String(format_date_text(d, &fmt)));
+        }
+    }
+    if is_numeric_format(&fmt) {
+        return Ok(Value::String(format_number(&args[0], &fmt)?));
+    }
+    Ok(Value::String(args[0].canonical()))
+}
+
+/// YEAR(date_serial) returns the Gregorian year component of an Excel serial date.
+fn year(args: &[Value]) -> Result<Value> {
+    if args.len() != 1 {
+        bail!("YEAR expects 1 argument, got {}", args.len());
+    }
+    Ok(Value::Number(excel_date_arg("YEAR", &args[0])?.year as f64))
+}
+
+/// MONTH(date_serial) returns the 1-based month component of an Excel serial date.
+fn month(args: &[Value]) -> Result<Value> {
+    if args.len() != 1 {
+        bail!("MONTH expects 1 argument, got {}", args.len());
+    }
+    Ok(Value::Number(
+        excel_date_arg("MONTH", &args[0])?.month as f64,
+    ))
+}
+
+/// DAY(date_serial) returns the day-of-month component of an Excel serial date.
+fn day(args: &[Value]) -> Result<Value> {
+    if args.len() != 1 {
+        bail!("DAY expects 1 argument, got {}", args.len());
+    }
+    Ok(Value::Number(excel_date_arg("DAY", &args[0])?.day as f64))
+}
+
+/// EOMONTH(start_serial, months) returns the serial of the target month's last day.
+fn eomonth(args: &[Value]) -> Result<Value> {
+    if args.len() != 2 {
+        bail!("EOMONTH expects 2 arguments, got {}", args.len());
+    }
+    let d = excel_date_arg("EOMONTH", &args[0])?;
+    let months = integer_arg("EOMONTH", &args[1])?;
+    let (year, month) = add_months(d.year, d.month, months)?;
+    Ok(Value::Number(date_to_excel_serial(
+        year,
+        month,
+        days_in_excel_month(year, month),
+    )?))
+}
+
+/// EDATE(start_serial, months) returns the same day in the target month, clamped to month end.
+fn edate(args: &[Value]) -> Result<Value> {
+    if args.len() != 2 {
+        bail!("EDATE expects 2 arguments, got {}", args.len());
+    }
+    let d = excel_date_arg("EDATE", &args[0])?;
+    let months = integer_arg("EDATE", &args[1])?;
+    let (year, month) = add_months(d.year, d.month, months)?;
+    let day = d.day.min(days_in_excel_month(year, month));
+    Ok(Value::Number(date_to_excel_serial(year, month, day)?))
+}
+
 fn is_empty_for_ifempty(v: &Value) -> bool {
     match v {
         Value::Empty => true,
@@ -168,6 +265,198 @@ fn is_empty_for_ifempty(v: &Value) -> bool {
     }
 }
 
+fn excel_date_arg(name: &str, v: &Value) -> Result<ExcelDateTime> {
+    let serial = coerce_number(v)?;
+    excel_serial_to_datetime(serial).map_err(|e| anyhow::anyhow!("{name} expected a date: {e}"))
+}
+
+fn integer_arg(name: &str, v: &Value) -> Result<i32> {
+    let n = coerce_number(v)?;
+    if !n.is_finite() || n.fract() != 0.0 || n < i32::MIN as f64 || n > i32::MAX as f64 {
+        bail!("{name} expected an integer month offset");
+    }
+    Ok(n as i32)
+}
+
+fn excel_serial_to_datetime(serial: f64) -> Result<ExcelDateTime> {
+    if !serial.is_finite() {
+        bail!("date serial must be finite");
+    }
+
+    let mut whole = serial.floor() as i64;
+    let mut seconds = ((serial - serial.floor()) * SECONDS_PER_DAY + 0.0000001).floor() as i64;
+    if seconds >= SECONDS_PER_DAY as i64 {
+        whole += 1;
+        seconds -= SECONDS_PER_DAY as i64;
+    }
+
+    let (year, month, day, fake_leap_day) = if whole == EXCEL_FAKE_LEAP_DAY_SERIAL {
+        (1900, 2, 29, true)
+    } else if whole == 0 {
+        (1899, 12, 30, false)
+    } else if (1..EXCEL_FAKE_LEAP_DAY_SERIAL).contains(&whole) {
+        let (y, m, d) = civil_from_days(EXCEL_EPOCH_DAYS + whole + 1);
+        (y, m, d, false)
+    } else {
+        let (y, m, d) = civil_from_days(EXCEL_EPOCH_DAYS + whole);
+        (y, m, d, false)
+    };
+
+    Ok(ExcelDateTime {
+        year,
+        month,
+        day,
+        hour: (seconds / 3600) as u32,
+        minute: ((seconds / 60) % 60) as u32,
+        second: (seconds % 60) as u32,
+        fake_leap_day,
+    })
+}
+
+fn date_to_excel_serial(year: i32, month: u32, day: u32) -> Result<f64> {
+    if year == 1900 && month == 2 && day == 29 {
+        return Ok(EXCEL_FAKE_LEAP_DAY_SERIAL as f64);
+    }
+    if !valid_gregorian_date(year, month, day) {
+        bail!("invalid date {year:04}-{month:02}-{day:02}");
+    }
+    let days = days_from_civil(year, month, day);
+    let serial = if days >= days_from_civil(1900, 3, 1) {
+        days - EXCEL_EPOCH_DAYS
+    } else if days >= days_from_civil(1900, 1, 1) {
+        days - EXCEL_EPOCH_DAYS - 1
+    } else {
+        days - EXCEL_EPOCH_DAYS
+    };
+    Ok(serial as f64)
+}
+
+fn is_text_date_format(fmt: &str) -> bool {
+    let lower = fmt.to_ascii_lowercase();
+    ["yyyy", "yy", "mm", "dd", "hh", "ss"]
+        .iter()
+        .any(|token| lower.contains(token))
+        || lower.contains('m')
+        || lower.contains('d')
+}
+
+fn format_date_text(d: ExcelDateTime, fmt: &str) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < fmt.len() {
+        if starts_with_ci(fmt, i, "yyyy") {
+            out.push_str(&format!("{:04}", d.year));
+            i += 4;
+        } else if starts_with_ci(fmt, i, "yy") {
+            out.push_str(&format!("{:02}", d.year.rem_euclid(100)));
+            i += 2;
+        } else if starts_with_ci(fmt, i, "dd") {
+            out.push_str(&format!("{:02}", d.day));
+            i += 2;
+        } else if starts_with_ci(fmt, i, "d") {
+            out.push_str(&d.day.to_string());
+            i += 1;
+        } else if starts_with_ci(fmt, i, "hh") {
+            out.push_str(&format!("{:02}", d.hour));
+            i += 2;
+        } else if starts_with_ci(fmt, i, "mm") {
+            if is_minute_position(fmt, i) {
+                out.push_str(&format!("{:02}", d.minute));
+            } else {
+                out.push_str(&format!("{:02}", d.month));
+            }
+            i += 2;
+        } else if starts_with_ci(fmt, i, "m") {
+            if is_minute_position(fmt, i) {
+                out.push_str(&d.minute.to_string());
+            } else {
+                out.push_str(&d.month.to_string());
+            }
+            i += 1;
+        } else if starts_with_ci(fmt, i, "ss") {
+            out.push_str(&format!("{:02}", d.second));
+            i += 2;
+        } else {
+            let ch = fmt[i..].chars().next().expect("valid char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn starts_with_ci(s: &str, idx: usize, token: &str) -> bool {
+    s.get(idx..idx + token.len())
+        .map(|part| part.eq_ignore_ascii_case(token))
+        .unwrap_or(false)
+}
+
+fn is_minute_position(fmt: &str, idx: usize) -> bool {
+    if idx == 0 || !fmt.as_bytes().get(idx - 1).is_some_and(|b| *b == b':') {
+        return false;
+    }
+    fmt[..idx]
+        .bytes()
+        .any(|b| b == b'h' || b == b'H')
+}
+
+fn is_numeric_format(fmt: &str) -> bool {
+    let mut saw_digit_token = false;
+    for ch in fmt.chars() {
+        match ch {
+            '0' | '#' => saw_digit_token = true,
+            ',' | '.' => {}
+            _ => return false,
+        }
+    }
+    saw_digit_token
+}
+
+fn format_number(v: &Value, fmt: &str) -> Result<String> {
+    let n = coerce_number(v)?;
+    if !n.is_finite() {
+        bail!("TEXT cannot format non-finite number");
+    }
+
+    let decimals = fmt
+        .rfind('.')
+        .map(|dot| {
+            fmt[dot + 1..]
+                .chars()
+                .filter(|ch| *ch == '0' || *ch == '#')
+                .count()
+        })
+        .unwrap_or(0);
+    let rounded = round_half_away_from_zero(n, decimals as i32);
+    let sign = if n < 0.0 { "-" } else { "" };
+    let abs = rounded.abs();
+    let mut s = if decimals == 0 {
+        format!("{}", abs.floor() as i64)
+    } else {
+        format!("{abs:.decimals$}")
+    };
+    if fmt.contains(',') {
+        if let Some(dot) = s.find('.') {
+            let grouped = add_thousands(&s[..dot]);
+            s = format!("{}{}", grouped, &s[dot..]);
+        } else {
+            s = add_thousands(&s);
+        }
+    }
+    Ok(format!("{sign}{s}"))
+}
+
+fn add_thousands(digits: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+
 fn round_half_away_from_zero(n: f64, digits: i32) -> f64 {
     let factor = 10f64.powi(digits);
     if n >= 0.0 {
@@ -175,6 +464,68 @@ fn round_half_away_from_zero(n: f64, digits: i32) -> f64 {
     } else {
         -(((-n) * factor + 0.5).floor() / factor)
     }
+}
+
+fn add_months(year: i32, month: u32, months: i32) -> Result<(i32, u32)> {
+    let total = year as i64 * 12 + month as i64 - 1 + months as i64;
+    let year = total.div_euclid(12);
+    if year < i32::MIN as i64 || year > i32::MAX as i64 {
+        bail!("month offset produced an out-of-range year");
+    }
+    Ok((year as i32, total.rem_euclid(12) as u32 + 1))
+}
+
+fn days_in_excel_month(year: i32, month: u32) -> u32 {
+    if year == 1900 && month == 2 {
+        29
+    } else {
+        days_in_gregorian_month(year, month)
+    }
+}
+
+fn days_in_gregorian_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_gregorian_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn valid_gregorian_date(year: i32, month: u32, day: u32) -> bool {
+    month != 0 && day != 0 && day <= days_in_gregorian_month(year, month)
+}
+
+fn is_gregorian_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = year as i64 - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month as i64;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    (
+        (year + i64::from(month <= 2)) as i32,
+        month as u32,
+        day as u32,
+    )
 }
 
 #[cfg(test)]
@@ -187,5 +538,64 @@ mod tests {
         assert_eq!(round_half_away_from_zero(-2.5, 0), -3.0);
         assert_eq!(round_half_away_from_zero(2.45, 1), 2.5);
         assert_eq!(round_half_away_from_zero(-2.45, 1), -2.5);
+    }
+
+    #[test]
+    fn text_formats_dates_and_numbers() {
+        assert_eq!(
+            text(&[
+                Value::Number(46_145.0),
+                Value::String("YYYY-MM-DD".into())
+            ])
+            .unwrap(),
+            Value::String("2026-05-03".into())
+        );
+        assert_eq!(
+            text(&[Value::Number(1234.5), Value::String("#,##0".into())]).unwrap(),
+            Value::String("1,235".into())
+        );
+        assert_eq!(
+            text(&[Value::Number(-2.345), Value::String("0.00".into())]).unwrap(),
+            Value::String("-2.35".into())
+        );
+    }
+
+    #[test]
+    fn date_components_use_excel_serials() {
+        assert_eq!(
+            year(&[Value::Number(46_053.0)]).unwrap(),
+            Value::Number(2026.0)
+        );
+        assert_eq!(
+            month(&[Value::Number(46_053.0)]).unwrap(),
+            Value::Number(1.0)
+        );
+        assert_eq!(
+            day(&[Value::Number(46_053.0)]).unwrap(),
+            Value::Number(31.0)
+        );
+        assert_eq!(
+            text(&[Value::Number(1.0), Value::String("YYYY-MM-DD".into())]).unwrap(),
+            Value::String("1900-01-01".into())
+        );
+        assert_eq!(
+            text(&[Value::Number(60.0), Value::String("YYYY-MM-DD".into())]).unwrap(),
+            Value::String("1900-02-29".into())
+        );
+    }
+
+    #[test]
+    fn eomonth_and_edate_return_serials() {
+        let eomonth_value = eomonth(&[Value::Number(46_053.0), Value::Number(0.0)]).unwrap();
+        assert_eq!(
+            text(&[eomonth_value, Value::String("YYYY-MM-DD".into())]).unwrap(),
+            Value::String("2026-01-31".into())
+        );
+
+        let edate_value = edate(&[Value::Number(46_053.0), Value::Number(1.0)]).unwrap();
+        assert_eq!(
+            text(&[edate_value, Value::String("YYYY-MM-DD".into())]).unwrap(),
+            Value::String("2026-02-28".into())
+        );
     }
 }
