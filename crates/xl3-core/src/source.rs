@@ -44,6 +44,27 @@ impl CalamineSourceReader {
     pub fn first_sheet(&self) -> Option<String> {
         self.workbook.sheet_names().into_iter().next()
     }
+
+    /// Resolve a `source_sheet` configuration value to an actual sheet
+    /// name in the workbook. Accepts:
+    /// - exact name (`"Data"`) — returned as-is iff present
+    /// - prefix glob (`"Data_*"`) — first sheet in workbook order whose
+    ///   name starts with the literal prefix (xl3 evaluation.md
+    ///   "Source Data Model")
+    pub fn resolve_sheet_name(&self, pattern: &str) -> Option<String> {
+        if let Some(prefix) = pattern.strip_suffix('*') {
+            self.workbook
+                .sheet_names()
+                .into_iter()
+                .find(|n| n.starts_with(prefix))
+        } else {
+            let pattern = pattern.to_string();
+            self.workbook
+                .sheet_names()
+                .into_iter()
+                .find(|n| n == &pattern)
+        }
+    }
 }
 
 /// True if a value should be treated as blank.

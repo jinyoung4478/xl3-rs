@@ -27,12 +27,16 @@ use crate::value::Value;
 pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
     let plan = parse_template(template).context("parse template")?;
     let mut source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
-    let source_sheet = plan
-        .config
-        .source_sheet()
-        .map(str::to_string)
-        .or_else(|| source_reader.first_sheet())
-        .ok_or_else(|| anyhow::anyhow!("no source_sheet in __config__ and source workbook is empty"))?;
+    let source_sheet = match plan.config.source_sheet() {
+        Some(pattern) => source_reader.resolve_sheet_name(pattern).ok_or_else(|| {
+            anyhow::anyhow!(
+                "source_sheet pattern {pattern:?} does not match any sheet in the data workbook"
+            )
+        })?,
+        None => source_reader
+            .first_sheet()
+            .ok_or_else(|| anyhow::anyhow!("source workbook is empty"))?,
+    };
     let source_table = plan.config.source_table();
     let source = source_reader.read(&source_sheet, &source_table)?;
     // Load every additional named source declared on `__sources__`.

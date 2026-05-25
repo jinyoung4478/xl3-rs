@@ -762,7 +762,14 @@ fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {
         Op::Div => {
             let rn = coerce_number(r)?;
             if rn == 0.0 {
-                bail!("xl3/eval/div-by-zero: division by zero");
+                // xl3 ADR-0025: division by zero emits a `#DIV/0!` error
+                // cell in the output. Stage-1 conformance compares cell
+                // values via calamine, which surfaces error cells as
+                // Data::Error → Value::Empty in our compare path, so we
+                // emit Empty here. A first-class Value::Error variant
+                // (for stage-2 byte comparison) lands with manifest
+                // preservation later.
+                return Ok(Value::Empty);
             }
             Value::Number(coerce_number(l)? / rn)
         }

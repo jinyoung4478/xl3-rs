@@ -319,6 +319,18 @@ fn fixture_036_source_table_formula_header() {
 }
 
 #[test]
+fn fixture_015_source_sheet_prefix_first_match() {
+    run_fixture("015-source-sheet-prefix-first-match")
+        .expect("fixture 015 should pass");
+}
+
+#[test]
+fn fixture_106_division_by_zero_produces_error_cell() {
+    run_fixture("106-division-by-zero-produces-error-cell")
+        .expect("fixture 106 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
