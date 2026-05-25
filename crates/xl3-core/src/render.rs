@@ -8,7 +8,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::eval::{eval_cell, EvalContext};
+use std::collections::HashMap;
+
+use crate::directives::Directive;
+use crate::eval::{compare, eval_cell, eval_expression_str, is_truthy, EvalContext};
 use crate::output::{write_workbook, RenderedSheet};
 use crate::plan::{parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan};
 use crate::source::{CalamineSourceReader, SourceData, SourceReader};
@@ -44,14 +47,15 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
             RowPlan::Static(cells) => {
                 rows.push(render_static_row(cells));
             }
-            RowPlan::ExpandDown(cells) => {
-                for source_row in &source.rows {
-                    let ctx: EvalContext = source_row.clone();
-                    rows.push(render_template_row(cells, &ctx)?);
+            RowPlan::ExpandDown { cells, directives } => {
+                let effective = apply_directives(&source.rows, directives)?;
+                for source_row in &effective {
+                    rows.push(render_template_row(cells, source_row)?);
                 }
             }
-            RowPlan::ExpandRight(cells) => {
-                rows.push(render_expand_right_row(cells, source)?);
+            RowPlan::ExpandRight { cells, directives } => {
+                let effective = apply_directives(&source.rows, directives)?;
+                rows.push(render_expand_right_row(cells, &effective)?);
             }
         }
     }
@@ -61,8 +65,54 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
     })
 }
 
-fn render_expand_right_row(cells: &[CellSource], source: &SourceData) -> Result<Vec<Value>> {
-    let mut out = Vec::with_capacity(cells.len() + source.rows.len());
+fn apply_directives(
+    rows: &[HashMap<String, Value>],
+    directives: &[Directive],
+) -> Result<Vec<HashMap<String, Value>>> {
+    let mut current: Vec<HashMap<String, Value>> = rows.to_vec();
+    for d in directives {
+        match d {
+            Directive::Filter(expr) => {
+                let mut kept = Vec::with_capacity(current.len());
+                for row in current.drain(..) {
+                    let v = eval_expression_str(expr, &row)?;
+                    if is_truthy(&v) {
+                        kept.push(row);
+                    }
+                }
+                current = kept;
+            }
+            Directive::Sort { field, ascending } => {
+                let asc = *ascending;
+                current.sort_by(|a, b| {
+                    let av = a.get(field).cloned().unwrap_or(Value::Empty);
+                    let bv = b.get(field).cloned().unwrap_or(Value::Empty);
+                    let ord = compare(&av, &bv).unwrap_or(0);
+                    let ordering = ord.cmp(&0);
+                    if asc {
+                        ordering
+                    } else {
+                        ordering.reverse()
+                    }
+                });
+            }
+            Directive::Top(n) => {
+                current.truncate(*n);
+            }
+            Directive::Repeat(_) | Directive::Unhandled(_) => {
+                // direction is already absorbed by the planner;
+                // Unhandled is intentionally inert at this milestone.
+            }
+        }
+    }
+    Ok(current)
+}
+
+fn render_expand_right_row(
+    cells: &[CellSource],
+    rows: &[HashMap<String, Value>],
+) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(cells.len() + rows.len());
     let mut emitted_expansion = false;
     for cell in cells {
         match cell {
@@ -75,9 +125,8 @@ fn render_expand_right_row(cells: &[CellSource], source: &SourceData) -> Result<
                     );
                 }
                 emitted_expansion = true;
-                for source_row in &source.rows {
-                    let ctx: EvalContext = source_row.clone();
-                    out.push(eval_cell(t, &ctx)?);
+                for source_row in rows {
+                    out.push(eval_cell(t, source_row)?);
                 }
             }
         }

@@ -19,6 +19,13 @@ pub enum Direction {
 #[derive(Debug, Clone)]
 pub enum Directive {
     Repeat(Direction),
+    /// `@filter <expr>` — expression evaluated per source row; truthy
+    /// rows are kept.
+    Filter(String),
+    /// `@sort [Field] [asc|desc]` — sort key + direction.
+    Sort { field: String, ascending: bool },
+    /// `@top N` — keep first N rows after sort/filter.
+    Top(usize),
     /// Captured but not yet acted on. Lets the planner classify rows as
     /// "directive only" without exploding when richer fixtures hit.
     Unhandled(String),
@@ -68,8 +75,50 @@ fn parse_one(inner: &str) -> Option<Directive> {
             "right" => Directive::Repeat(Direction::Right),
             _ => Directive::Unhandled(format!("@repeat {rest}")),
         },
+        "filter" => {
+            if rest.is_empty() {
+                Directive::Unhandled("@filter (empty)".into())
+            } else {
+                Directive::Filter(rest.to_string())
+            }
+        }
+        "sort" => parse_sort(rest),
+        "top" => match rest.parse::<usize>() {
+            Ok(n) => Directive::Top(n),
+            Err(_) => Directive::Unhandled(format!("@top {rest}")),
+        },
         _ => Directive::Unhandled(format!("@{name} {rest}").trim().to_string()),
     })
+}
+
+fn parse_sort(rest: &str) -> Directive {
+    // `[Field]` then optional `asc` / `desc`. xl3 default = ascending.
+    let rest = rest.trim();
+    let (field_part, dir_part) = if let Some(close) = rest.find(']') {
+        let after = rest[close + 1..].trim();
+        (&rest[..=close], after)
+    } else {
+        // Bare identifier form: `@sort Field [asc|desc]`.
+        match rest.split_once(char::is_whitespace) {
+            Some((f, r)) => (f, r.trim()),
+            None => (rest, ""),
+        }
+    };
+    let field = field_part
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim()
+        .to_string();
+    if field.is_empty() {
+        return Directive::Unhandled(format!("@sort {rest}"));
+    }
+    let ascending = match dir_part.to_ascii_lowercase().as_str() {
+        "" | "asc" | "ascending" => true,
+        "desc" | "descending" => false,
+        _ => return Directive::Unhandled(format!("@sort {rest}")),
+    };
+    Directive::Sort { field, ascending }
 }
 
 #[cfg(test)]

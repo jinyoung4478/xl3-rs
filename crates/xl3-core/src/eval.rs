@@ -524,7 +524,7 @@ fn coerce_number(v: &Value) -> Result<f64> {
     }
 }
 
-fn is_truthy(v: &Value) -> bool {
+pub fn is_truthy(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
         Value::Empty => false,
@@ -536,7 +536,7 @@ fn is_truthy(v: &Value) -> bool {
 /// Three-way comparison: -1 / 0 / 1. Numeric on both sides when both
 /// are numbers (or coerce-able). Otherwise lexicographic on canonical
 /// strings. (Matches the xl3 0.x default — see ADR-0009 / functions.ts.)
-fn compare(l: &Value, r: &Value) -> Result<i32> {
+pub fn compare(l: &Value, r: &Value) -> Result<i32> {
     if matches!(l, Value::Number(_) | Value::Bool(_) | Value::Empty)
         && matches!(r, Value::Number(_) | Value::Bool(_) | Value::Empty)
     {

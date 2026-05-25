@@ -54,11 +54,17 @@ impl CellSource {
 #[derive(Debug, Clone)]
 pub enum RowPlan {
     Static(Vec<CellSource>),
-    ExpandDown(Vec<CellSource>),
+    ExpandDown {
+        cells: Vec<CellSource>,
+        directives: Vec<Directive>,
+    },
     /// Same row, repeated *to the right* once per source row. The first
     /// template cell in the row is the anchor — its column is the
     /// starting column of the expanded run.
-    ExpandRight(Vec<CellSource>),
+    ExpandRight {
+        cells: Vec<CellSource>,
+        directives: Vec<Directive>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -129,9 +135,11 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
             .with_context(|| format!("read template sheet {name:?}"))?;
         let (rows, cols) = range.get_size();
         let mut row_plans = Vec::with_capacity(rows);
-        // Pending direction from the last directive row. xl3 attaches
-        // a `@repeat right` (or down) to the *next* data row.
+        // Pending state from previous directive rows. xl3 attaches all
+        // directive rows that precede the next data row to that row,
+        // in declaration order.
         let mut pending_direction = Direction::Down;
+        let mut pending_directives: Vec<Directive> = Vec::new();
         for r in 0..rows {
             let mut row_cells = Vec::with_capacity(cols);
             let mut has_template = false;
@@ -169,8 +177,9 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                     if let Some(CData::String(s)) = range.get((r, c)) {
                         if let Some(directives) = parse_directive_cell(s) {
                             for d in directives {
-                                if let Directive::Repeat(dir) = d {
-                                    pending_direction = dir;
+                                match d {
+                                    Directive::Repeat(dir) => pending_direction = dir,
+                                    other => pending_directives.push(other),
                                 }
                             }
                         }
@@ -180,11 +189,18 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
             }
 
             let row_plan = if has_template {
+                let directives = std::mem::take(&mut pending_directives);
                 let plan = match pending_direction {
-                    Direction::Down => RowPlan::ExpandDown(row_cells),
-                    Direction::Right => RowPlan::ExpandRight(row_cells),
+                    Direction::Down => RowPlan::ExpandDown {
+                        cells: row_cells,
+                        directives,
+                    },
+                    Direction::Right => RowPlan::ExpandRight {
+                        cells: row_cells,
+                        directives,
+                    },
                 };
-                pending_direction = Direction::Down; // reset after binding
+                pending_direction = Direction::Down;
                 plan
             } else {
                 RowPlan::Static(row_cells)

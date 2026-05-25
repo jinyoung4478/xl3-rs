@@ -189,6 +189,11 @@ fn fixture_004_repeat_right_default() {
 }
 
 #[test]
+fn fixture_044_sort_and_top_order() {
+    run_fixture("044-sort-and-top-order").expect("fixture 044 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
