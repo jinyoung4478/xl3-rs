@@ -199,39 +199,15 @@ fn render_sheet(
     named_sources: &HashMap<String, Value>,
 ) -> Result<RenderedSheet> {
     let mut rows: Vec<Vec<Value>> = Vec::new();
-    // ADR-0066: a post-block Static row that mixes inside-col cells
-    // (these shift with expansion) and outside-col cells (these stay
-    // at template row positions) is split into two output rows.
-    let mut last_block_col_range: Option<(usize, usize)> = None;
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
-                if let Some(range) = last_block_col_range {
-                    let (outside_only, inside_only, has_outside, has_inside) =
-                        split_inside_outside(cells, range);
-                    if has_inside && has_outside {
-                        rows.push(render_static_row(
-                            &outside_only,
-                            inputs_value,
-                            lists_value,
-                            named_sources,
-                        )?);
-                        rows.push(render_static_row(
-                            &inside_only,
-                            inputs_value,
-                            lists_value,
-                            named_sources,
-                        )?);
-                        continue;
-                    }
-                }
                 rows.push(render_static_row(
                     cells,
                     inputs_value,
                     lists_value,
                     named_sources,
                 )?);
-                last_block_col_range = None;
             }
             RowPlan::ExpandDown {
                 cells,
@@ -240,7 +216,7 @@ fn render_sheet(
                 side_rows,
                 col_range,
             } => {
-                last_block_col_range = *col_range;
+                let _ = col_range;
                 let block_rows = resolve_block_rows(directives, source, named_sources);
                 let effective =
                     apply_directives(&block_rows, directives, lists_value, named_sources)?;
@@ -297,6 +273,23 @@ fn render_sheet(
                     // No grouping: emit every row, then any trailing
                     // subtotal rows once over the whole block.
                     emit_expansion(&effective, &mut rows, &mut global_idx)?;
+                    // ADR-0066: side_rows that the expansion didn't
+                    // consume (one per source row beyond the first) are
+                    // post-block outside-only rows. Their template-row
+                    // position keeps them at their original spot, so we
+                    // emit them right after the expansion before any
+                    // subtotal / inside-footer rows.
+                    let consumed = effective.len().saturating_sub(1);
+                    if side_rows.len() > consumed {
+                        for extra in &side_rows[consumed..] {
+                            rows.push(render_static_row(
+                                extra,
+                                inputs_value,
+                                lists_value,
+                                named_sources,
+                            )?);
+                        }
+                    }
                     for subtotal_cells in subtotal_rows {
                         rows.push(render_subtotal_row(
                             subtotal_cells,
@@ -335,7 +328,6 @@ fn render_sheet(
                     lists_value,
                     named_sources,
                 )?);
-                last_block_col_range = None;
             }
         }
     }

@@ -297,6 +297,36 @@ fn cells_only_outside_range(cells: &[CellSource], range: (usize, usize)) -> bool
     any_outside
 }
 
+fn cells_isolate_outside(cells: &[CellSource], range: (usize, usize)) -> Vec<CellSource> {
+    let (lo, hi) = range;
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if i >= lo && i <= hi {
+                CellSource::Empty
+            } else {
+                c.clone()
+            }
+        })
+        .collect()
+}
+
+fn cells_isolate_inside(cells: &[CellSource], range: (usize, usize)) -> Vec<CellSource> {
+    let (lo, hi) = range;
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if i >= lo && i <= hi {
+                c.clone()
+            } else {
+                CellSource::Empty
+            }
+        })
+        .collect()
+}
+
 fn template_depends_on_source_row(s: &str, named_sources_to_exclude: &[&str]) -> bool {
     let mut cleaned = s.to_string();
     for ns in [
@@ -471,13 +501,48 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                 continue;
             }
 
-            // A completely empty template row (no cell of any kind)
-            // never contributes to the output — it's just spacing in
-            // the author's spreadsheet. Skipping it here keeps the
-            // post-block split logic in the renderer simple (the
-            // mixed footer row sits directly after the expansion).
-            if !any_cell {
-                continue;
+            // ADR-0066 column-scoped splice — `row_cells` placement
+            // depends on what the most recent ExpandDown looks like.
+            // We handle empty / outside-only / mixed rows in *one*
+            // place so the renderer keeps a simple "Static row goes to
+            // the next output row" model.
+            if !has_source_template && !has_subtotal {
+                if let Some(RowPlan::ExpandDown {
+                    col_range: Some(range),
+                    side_rows,
+                    ..
+                }) = row_plans.last_mut()
+                {
+                    let range = *range;
+                    // Empty row: placeholder side row keeps the
+                    // template-row ↔ expansion-iter alignment intact.
+                    if !any_cell {
+                        side_rows.push(row_cells);
+                        continue;
+                    }
+                    if cells_only_outside_range(&row_cells, range) {
+                        side_rows.push(row_cells);
+                        continue;
+                    }
+                    let outside = cells_isolate_outside(&row_cells, range);
+                    let inside = cells_isolate_inside(&row_cells, range);
+                    let has_inside = inside
+                        .iter()
+                        .any(|c| !matches!(c, CellSource::Empty));
+                    let has_outside = outside
+                        .iter()
+                        .any(|c| !matches!(c, CellSource::Empty));
+                    if has_inside && has_outside {
+                        side_rows.push(outside);
+                        row_plans.push(RowPlan::Static(inside));
+                        continue;
+                    }
+                }
+                // Outside the ExpandDown's reach: drop fully empty
+                // rows so trailing spacing doesn't bloat the output.
+                if !any_cell {
+                    continue;
+                }
             }
 
             // A row whose template cells are all `@subtotal ...` (no

@@ -556,6 +556,13 @@ fn fixture_097_native_formula_static_cell_preserved() {
 }
 
 #[test]
+fn fixture_144_block_side_cells_after_block() {
+    run_fixture("144-block-side-cells-after-block")
+        .expect("fixture 144 should pass");
+}
+
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
