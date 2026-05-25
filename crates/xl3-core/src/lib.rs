@@ -19,6 +19,7 @@ pub mod errors;
 pub mod eval;
 pub mod functions;
 pub mod introspect;
+pub mod manifest;
 pub mod output;
 pub mod output_model;
 pub mod plan;
@@ -35,10 +36,15 @@ pub use introspect::{
     preview, preview_bytes, read_template_inputs, read_template_inputs_bytes, InputKind,
     InputSpec, PreviewFile, PreviewResult, PreviewSheet, PreviewSource,
 };
+pub use manifest::{
+    AlignmentSpec, ColumnWidth, FillPattern, FillSpec, FontSpec, HorizontalAlign,
+    StyleManifest, StyleSpec, VerticalAlign,
+};
 pub use output_model::{OutputFile, XtlWarning};
 pub use plan::{parse_template, parse_template_bytes, CellSource, RowPlan, SheetPlan, WorkbookPlan};
 pub use render::{
-    render, render_from_bytes_to_files, render_from_bytes_to_files_with_inputs, render_to_files,
+    render, render_from_bytes_to_files, render_from_bytes_to_files_full,
+    render_from_bytes_to_files_with_inputs, render_to_files,
 };
 pub use source::{CalamineSourceReader, SourceData, SourceReader};
 pub use value::Value;

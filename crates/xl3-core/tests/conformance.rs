@@ -839,6 +839,73 @@ fn bytes_api_round_trip_fixture_001() {
     assert!(!p.sources.is_empty());
 }
 
+/// Phase 2 Task 2.2 — render_from_bytes_to_files_full with a tiny
+/// hand-built manifest. The corpus doesn't carry manifest fixtures
+/// yet, so we sanity-check the apply path here: a merge range and a
+/// column-width entry both make it into the output workbook.
+#[test]
+fn manifest_apply_merges_and_columns() {
+    use std::collections::HashMap as HMap;
+    use xl3_core::{
+        render_from_bytes_to_files_full, ColumnWidth, StyleManifest,
+    };
+
+    let Some(dir) = fixture_dir("001-bracket-substitution") else {
+        eprintln!("[skip] manifest_apply: corpus not found");
+        return;
+    };
+    let template = std::fs::read(dir.join("template.xlsx")).expect("read template");
+    let data = std::fs::read(dir.join("data.xlsx")).expect("read data");
+
+    let mut manifest = StyleManifest::default();
+    let mut merges = HMap::new();
+    merges.insert("Report".to_string(), vec!["A1:B1".to_string()]);
+    manifest.merges = merges;
+    let mut columns = HMap::new();
+    columns.insert(
+        "Report".to_string(),
+        vec![ColumnWidth { col: 0, width: 30.0 }],
+    );
+    manifest.columns = columns;
+
+    let files = render_from_bytes_to_files_full(
+        &template,
+        data,
+        &HMap::new(),
+        Some(manifest),
+    )
+    .expect("render with manifest");
+    assert!(!files.is_empty());
+    let bytes = &files[0].data;
+
+    // The merge cell appears in the OOXML body — calamine doesn't
+    // surface merges directly, so check the raw xml entry.
+    let cursor = std::io::Cursor::new(bytes.clone());
+    let mut zip = zip::ZipArchive::new(cursor).expect("open output zip");
+    let mut sheet_xml = String::new();
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i).unwrap();
+        if file.name().starts_with("xl/worksheets/sheet") {
+            use std::io::Read;
+            file.read_to_string(&mut sheet_xml).unwrap();
+            break;
+        }
+    }
+    assert!(
+        sheet_xml.contains("<mergeCell ref=\"A1:B1\""),
+        "expected mergeCell entry in output sheet xml, got:\n{sheet_xml}"
+    );
+    // rust_xlsxwriter pads the requested cw with an internal
+    // character-width adjustment, so the rendered value is the
+    // requested 30 plus a fractional pixel offset. Asserting the
+    // exact float would couple us to the writer's internals; check
+    // the dominant integer part instead.
+    assert!(
+        sheet_xml.contains("<col ") && sheet_xml.contains("width=\"30."),
+        "expected col entry with width≈30 in output sheet xml, got:\n{sheet_xml}"
+    );
+}
+
 /// Walk every fixture, classify pass / fail / skip, and print a summary.
 /// Always passes — purely informational. The targeted `fixture_NNN_*`
 /// tests above are the ones that gate the build; this one is what we use

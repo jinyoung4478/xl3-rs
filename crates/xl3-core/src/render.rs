@@ -15,7 +15,7 @@ use crate::directives::Directive;
 use crate::eval::{
     compare, eval_cell, eval_expression_str, inject_rownum, inject_rows, is_truthy, EvalContext,
 };
-use crate::output::{write_workbook, RenderedSheet};
+use crate::output::{write_workbook, write_workbook_with_manifest, RenderedSheet};
 use crate::output_model::{OutputFile, XtlWarning};
 use crate::plan::{
     inputs_to_value, lists_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
@@ -92,16 +92,40 @@ pub fn render_from_bytes_to_files_with_inputs(
     data_bytes: Vec<u8>,
     host_inputs: &HashMap<String, Value>,
 ) -> Result<Vec<OutputFile>> {
+    render_from_bytes_to_files_full(template_bytes, data_bytes, host_inputs, None)
+}
+
+/// Full byte-buffer entry, accepting an optional style manifest
+/// extracted by the host (xl3 TS). The manifest preserves fonts,
+/// fills, alignment, merges, and column widths that aren't carried
+/// by xl3-core's own template-styles pass. `None` is the same as
+/// calling `render_from_bytes_to_files_with_inputs` — no manifest,
+/// styles fall back to what we extract from styles.xml ourselves.
+pub fn render_from_bytes_to_files_full(
+    template_bytes: &[u8],
+    data_bytes: Vec<u8>,
+    host_inputs: &HashMap<String, Value>,
+    manifest: Option<crate::manifest::StyleManifest>,
+) -> Result<Vec<OutputFile>> {
     let plan = crate::plan::parse_template_bytes(template_bytes).context("parse template")?;
     let source_reader =
         CalamineSourceReader::open_bytes(data_bytes).context("open source workbook")?;
-    render_with_reader(plan, source_reader, host_inputs)
+    render_with_reader_and_manifest(plan, source_reader, host_inputs, manifest)
 }
 
 fn render_with_reader(
+    plan: WorkbookPlan,
+    source_reader: CalamineSourceReader,
+    host_inputs: &HashMap<String, Value>,
+) -> Result<Vec<OutputFile>> {
+    render_with_reader_and_manifest(plan, source_reader, host_inputs, None)
+}
+
+fn render_with_reader_and_manifest(
     mut plan: WorkbookPlan,
     mut source_reader: CalamineSourceReader,
     host_inputs: &HashMap<String, Value>,
+    manifest: Option<crate::manifest::StyleManifest>,
 ) -> Result<Vec<OutputFile>> {
     for (key, value) in host_inputs {
         plan.inputs.insert(key.clone(), value.clone());
@@ -130,7 +154,7 @@ fn render_with_reader(
         let data = source_reader.read(&decl.sheet, &decl.table)?;
         named_sources.insert(name.clone(), data);
     }
-    render_to_files_with_sources(&plan, &source, &named_sources)
+    render_to_files_with_sources_and_manifest(&plan, &source, &named_sources, manifest.as_ref())
 }
 
 
@@ -155,6 +179,15 @@ pub fn render_to_files_with_sources(
     source: &SourceData,
     named_sources: &HashMap<String, SourceData>,
 ) -> Result<Vec<OutputFile>> {
+    render_to_files_with_sources_and_manifest(plan, source, named_sources, None)
+}
+
+pub fn render_to_files_with_sources_and_manifest(
+    plan: &WorkbookPlan,
+    source: &SourceData,
+    named_sources: &HashMap<String, SourceData>,
+    manifest: Option<&crate::manifest::StyleManifest>,
+) -> Result<Vec<OutputFile>> {
     let group_keys = plan.config.file_group_keys();
     if group_keys.is_empty() {
         return Ok(vec![render_one_file(
@@ -162,6 +195,7 @@ pub fn render_to_files_with_sources(
             source,
             named_sources,
             &HashMap::new(),
+            manifest,
         )?]);
     }
     // ADR-0002: partition the source by the file-group keys in
@@ -197,6 +231,7 @@ pub fn render_to_files_with_sources(
             &group_source,
             named_sources,
             &group_ctx,
+            manifest,
         )?);
     }
     Ok(out)
@@ -207,6 +242,7 @@ fn render_one_file(
     source: &SourceData,
     named_sources: &HashMap<String, SourceData>,
     group_keys: &HashMap<String, Value>,
+    manifest: Option<&crate::manifest::StyleManifest>,
 ) -> Result<OutputFile> {
     let inputs_value = inputs_to_value(&plan.inputs);
     let lists_value = lists_to_value(&plan.lists);
@@ -253,7 +289,7 @@ fn render_one_file(
             )?);
         }
     }
-    let bytes = write_workbook(&out_sheets)?;
+    let bytes = write_workbook_with_manifest(&out_sheets, manifest)?;
     let pattern = plan
         .config
         .output_file_pattern()
