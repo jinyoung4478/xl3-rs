@@ -45,6 +45,12 @@ pub enum Directive {
     /// One subtotal row is emitted at each level on group boundary,
     /// from innermost to outermost (ADR-0038).
     Group(Vec<String>),
+    /// `@block A:B` — declares a sub-block that owns columns A..=B.
+    /// 0-based inclusive col range. ADR-0068 / 0069.
+    Block {
+        col_first: usize,
+        col_last: usize,
+    },
     /// Captured but not yet acted on. Lets the planner classify rows as
     /// "directive only" without exploding when richer fixtures hit.
     Unhandled(String),
@@ -115,6 +121,20 @@ fn parse_one(inner: &str) -> Option<Directive> {
             }
         }
         "join" => parse_join(rest),
+        "block" => {
+            let body = rest.trim();
+            if let Some((a, b)) = body.split_once(':') {
+                if let (Some(lo), Some(hi)) =
+                    (parse_excel_col_letter(a.trim()), parse_excel_col_letter(b.trim()))
+                {
+                    return Some(Directive::Block {
+                        col_first: lo.min(hi),
+                        col_last: lo.max(hi),
+                    });
+                }
+            }
+            Directive::Unhandled(format!("@block {body}"))
+        }
         "group" => {
             // `@group [F1], [F2], …` — comma-separated, each bracketed.
             // Bare-ident form `@group F1` also accepted for symmetry.
@@ -186,6 +206,24 @@ fn parse_source_bracket_text(s: &str) -> Option<(String, String)> {
         return None;
     }
     Some((n.to_string(), f.to_string()))
+}
+
+fn parse_excel_col_letter(s: &str) -> Option<usize> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut col = 0usize;
+    for c in s.chars() {
+        if !c.is_ascii_alphabetic() {
+            return None;
+        }
+        col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+    }
+    if col == 0 {
+        None
+    } else {
+        Some(col - 1)
+    }
 }
 
 fn parse_sort(rest: &str) -> Directive {

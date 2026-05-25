@@ -19,7 +19,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
 use crate::directives::{parse_directive_cell, Direction, Directive};
-use crate::styles::{self, NumFmtKind};
+use crate::styles::{self, NumFmtKind, TemplateStyles};
 use crate::value::Value;
 
 #[derive(Debug, Default, Clone)]
@@ -211,6 +211,23 @@ pub enum RowPlan {
 #[derive(Debug, Clone)]
 pub struct SheetPlan {
     pub name: String,
+    pub rows: Vec<RowPlan>,
+    /// Multi-block (`@block A:B` / `@block D:E`). When non-empty, the
+    /// renderer ignores `rows` and renders each `SubBlock` separately,
+    /// then merges by column range. ADR-0068 / 0069.
+    pub sub_blocks: Vec<SubBlock>,
+    /// Total column width of the sheet (used to size the merged
+    /// row-major buffer when sub_blocks are in play).
+    pub n_cols: usize,
+}
+
+/// One column-bounded block in a multi-block sheet. `col_first` /
+/// `col_last` are 0-based inclusive sheet columns. `rows` is the
+/// block's own RowPlan sequence — cells are indexed 0..=(col_last - col_first).
+#[derive(Debug, Clone)]
+pub struct SubBlock {
+    pub col_first: usize,
+    pub col_last: usize,
     pub rows: Vec<RowPlan>,
 }
 
@@ -415,194 +432,72 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
             .worksheet_range(&name)
             .with_context(|| format!("read template sheet {name:?}"))?;
         let (rows, cols) = range.get_size();
-        let mut row_plans = Vec::with_capacity(rows);
-        // Pending state from previous directive rows. xl3 attaches all
-        // directive rows that precede the next data row to that row,
-        // in declaration order.
-        let mut pending_direction = Direction::Down;
-        let mut pending_directives: Vec<Directive> = Vec::new();
+
+        // ADR-0068/0069 multi-block detection. A `@block A:B` directive
+        // anywhere on the sheet declares a column-bounded sub-block.
+        // We pre-scan once so we know whether to drive the
+        // single-block (current) or multi-block path for this sheet.
+        let mut block_ranges: Vec<(usize, usize)> = Vec::new();
         for r in 0..rows {
-            let mut row_cells = Vec::with_capacity(cols);
-            let mut has_source_template = false;
-            let mut has_subtotal = false;
-            let mut directive_only = true;
-            let mut any_cell = false;
-            // The active-source (if any) earned by pending directive
-            // rows. When set, `<active>[Col]` references count as
-            // per-row refs (active source = default), while other
-            // named-source prefixes still resolve to whole row-sets.
-            let active_source: Option<&str> =
-                pending_directives.iter().find_map(|d| match d {
-                    Directive::Source(n) => Some(n.as_str()),
-                    _ => None,
-                });
-            let exclude_named: Vec<&str> = named_source_names
-                .iter()
-                .filter(|n| Some(n.as_str()) != active_source)
-                .map(|s| s.as_str())
-                .collect();
             for c in 0..cols {
-                let cell = match range.get((r, c)) {
-                    None | Some(CData::Empty) => CellSource::Empty,
-                    Some(CData::String(s)) if cell_is_template_text(s) => {
-                        any_cell = true;
-                        // ADR-0038: `@subtotal` is a cell-level marker,
-                        // not a directive row marker. Recognise it
-                        // before the directive sniff so it doesn't get
-                        // swallowed by `parse_directive_cell`.
-                        if let Some((aggregate, field)) = parse_subtotal_cell(s) {
-                            directive_only = false;
-                            has_subtotal = true;
-                            CellSource::Subtotal { aggregate, field }
-                        } else if parse_directive_cell(s).is_some() {
-                            // Directive cells don't surface in output;
-                            // they contribute their metadata instead.
-                            CellSource::Empty
-                        } else {
-                            directive_only = false;
-                            if template_depends_on_source_row(s, &exclude_named) {
-                                has_source_template = true;
-                            }
-                            let num_fmt = styles
-                                .format_code(&name, r as u32, c as u32)
-                                .map(|s| styles::classify_num_fmt(&s))
-                                .unwrap_or(NumFmtKind::General);
-                            CellSource::Template {
-                                text: s.clone(),
-                                num_fmt,
-                            }
-                        }
-                    }
-                    Some(other) => {
-                        any_cell = true;
-                        directive_only = false;
-                        CellSource::Literal(Value::from_calamine(other))
-                    }
-                };
-                row_cells.push(cell);
-            }
-
-            // A row whose template cells are *all* directive-only is a
-            // directive row — pull its directives into `pending_*` and
-            // omit it from the plan.
-            if any_cell && directive_only {
-                for c in 0..cols {
-                    if let Some(CData::String(s)) = range.get((r, c)) {
-                        if let Some(directives) = parse_directive_cell(s) {
-                            for d in directives {
-                                match d {
-                                    Directive::Repeat(dir) => pending_direction = dir,
-                                    other => pending_directives.push(other),
-                                }
+                if let Some(CData::String(s)) = range.get((r, c)) {
+                    if let Some(dirs) = parse_directive_cell(s) {
+                        for d in dirs {
+                            if let Directive::Block { col_first, col_last } = d {
+                                block_ranges.push((col_first, col_last));
                             }
                         }
                     }
                 }
-                continue;
             }
-
-            // ADR-0066 column-scoped splice — `row_cells` placement
-            // depends on what the most recent ExpandDown looks like.
-            // We handle empty / outside-only / mixed rows in *one*
-            // place so the renderer keeps a simple "Static row goes to
-            // the next output row" model.
-            if !has_source_template && !has_subtotal {
-                if let Some(RowPlan::ExpandDown {
-                    col_range: Some(range),
-                    side_rows,
-                    ..
-                }) = row_plans.last_mut()
-                {
-                    let range = *range;
-                    // Empty row: placeholder side row keeps the
-                    // template-row ↔ expansion-iter alignment intact.
-                    if !any_cell {
-                        side_rows.push(row_cells);
-                        continue;
-                    }
-                    if cells_only_outside_range(&row_cells, range) {
-                        side_rows.push(row_cells);
-                        continue;
-                    }
-                    let outside = cells_isolate_outside(&row_cells, range);
-                    let inside = cells_isolate_inside(&row_cells, range);
-                    let has_inside = inside
-                        .iter()
-                        .any(|c| !matches!(c, CellSource::Empty));
-                    let has_outside = outside
-                        .iter()
-                        .any(|c| !matches!(c, CellSource::Empty));
-                    if has_inside && has_outside {
-                        side_rows.push(outside);
-                        row_plans.push(RowPlan::Static(inside));
-                        continue;
-                    }
-                }
-                // Outside the ExpandDown's reach: drop fully empty
-                // rows so trailing spacing doesn't bloat the output.
-                if !any_cell {
-                    continue;
-                }
-            }
-
-            // A row whose template cells are all `@subtotal ...` (no
-            // other `{{ ... }}` blocks) attaches to the most recent
-            // ExpandDown block. xl3 always emits subtotal rows right
-            // after their owning expansion row, so we don't try to
-            // bridge gaps — if there isn't one immediately preceding,
-            // we fall back to treating it as a static row so the data
-            // survives.
-            if has_subtotal && !has_source_template {
-                if let Some(RowPlan::ExpandDown { subtotal_rows, .. }) = row_plans.last_mut() {
-                    subtotal_rows.push(row_cells);
-                    continue;
-                }
-            }
-
-            let row_plan = if has_source_template {
-                let directives = std::mem::take(&mut pending_directives);
-                let col_range = compute_template_col_range(&row_cells);
-                let plan = match pending_direction {
-                    Direction::Down => RowPlan::ExpandDown {
-                        cells: row_cells,
-                        directives,
-                        subtotal_rows: Vec::new(),
-                        side_rows: Vec::new(),
-                        col_range,
-                    },
-                    Direction::Right => RowPlan::ExpandRight {
-                        cells: row_cells,
-                        directives,
-                    },
-                };
-                pending_direction = Direction::Down;
-                plan
-            } else {
-                // ADR-0066 column-scoped splice: a row whose template-
-                // bearing cells only live *outside* the previous
-                // ExpandDown's col_range is a "side row" — it travels
-                // with later source-row iterations of the expansion at
-                // its original row position. Otherwise it's static.
-                if let Some(RowPlan::ExpandDown {
-                    col_range: Some(range),
-                    side_rows,
-                    ..
-                }) = row_plans.last_mut()
-                {
-                    if cells_only_outside_range(&row_cells, *range) {
-                        side_rows.push(row_cells);
-                        continue;
-                    }
-                }
-                RowPlan::Static(row_cells)
-            };
-            row_plans.push(row_plan);
         }
+        block_ranges.sort();
+        block_ranges.dedup();
+
+        if !block_ranges.is_empty() {
+            let mut sub_blocks_out: Vec<SubBlock> = Vec::new();
+            for (col_first, col_last) in &block_ranges {
+                let sub_rows = build_row_plans_for_range(
+                    &range,
+                    &name,
+                    rows,
+                    *col_first,
+                    *col_last,
+                    &styles,
+                    &named_source_names,
+                )?;
+                sub_blocks_out.push(SubBlock {
+                    col_first: *col_first,
+                    col_last: *col_last,
+                    rows: sub_rows,
+                });
+            }
+            sheets.push(SheetPlan {
+                name: name.clone(),
+                rows: Vec::new(),
+                sub_blocks: sub_blocks_out,
+                n_cols: cols,
+            });
+            continue;
+        }
+
+        let row_plans = build_row_plans_for_range(
+            &range,
+            &name,
+            rows,
+            0,
+            cols.saturating_sub(1),
+            &styles,
+            &named_source_names,
+        )?;
         sheets.push(SheetPlan {
             name,
             rows: row_plans,
+            sub_blocks: Vec::new(),
+            n_cols: cols,
         });
     }
+
 
     // Sanity check that we picked up the bits we need.
     if sheets.is_empty() {
@@ -758,6 +653,167 @@ fn sheet_names_set<R: std::io::Read + std::io::Seek>(
     wb: &Xlsx<R>,
 ) -> std::collections::HashSet<String> {
     wb.sheet_names().into_iter().collect()
+}
+
+/// Build the RowPlan sequence for the given column range of a sheet —
+/// re-used by both the single-block path and each sub-block of a
+/// multi-block sheet (ADR-0068/0069). Cells *outside* the range are
+/// not visited at all.
+fn build_row_plans_for_range(
+    range: &calamine::Range<CData>,
+    sheet_name: &str,
+    rows: usize,
+    col_first: usize,
+    col_last: usize,
+    styles: &TemplateStyles,
+    named_source_names: &[String],
+) -> Result<Vec<RowPlan>> {
+    let mut row_plans: Vec<RowPlan> = Vec::with_capacity(rows);
+    let mut pending_direction = Direction::Down;
+    let mut pending_directives: Vec<Directive> = Vec::new();
+    let cols_in_range = col_last.saturating_sub(col_first) + 1;
+    for r in 0..rows {
+        let mut row_cells = Vec::with_capacity(cols_in_range);
+        let mut has_source_template = false;
+        let mut has_subtotal = false;
+        let mut directive_only = true;
+        let mut any_cell = false;
+        let active_source: Option<&str> = pending_directives.iter().find_map(|d| match d {
+            Directive::Source(n) => Some(n.as_str()),
+            _ => None,
+        });
+        let exclude_named: Vec<&str> = named_source_names
+            .iter()
+            .filter(|n| Some(n.as_str()) != active_source)
+            .map(|s| s.as_str())
+            .collect();
+        for c_off in 0..cols_in_range {
+            let c = col_first + c_off;
+            let cell = match range.get((r, c)) {
+                None | Some(CData::Empty) => CellSource::Empty,
+                Some(CData::String(s)) if cell_is_template_text(s) => {
+                    any_cell = true;
+                    if let Some((aggregate, field)) = parse_subtotal_cell(s) {
+                        directive_only = false;
+                        has_subtotal = true;
+                        CellSource::Subtotal { aggregate, field }
+                    } else if parse_directive_cell(s).is_some() {
+                        CellSource::Empty
+                    } else {
+                        directive_only = false;
+                        if template_depends_on_source_row(s, &exclude_named) {
+                            has_source_template = true;
+                        }
+                        let num_fmt = styles
+                            .format_code(sheet_name, r as u32, c as u32)
+                            .map(|s| styles::classify_num_fmt(&s))
+                            .unwrap_or(NumFmtKind::General);
+                        CellSource::Template {
+                            text: s.clone(),
+                            num_fmt,
+                        }
+                    }
+                }
+                Some(other) => {
+                    any_cell = true;
+                    directive_only = false;
+                    CellSource::Literal(Value::from_calamine(other))
+                }
+            };
+            row_cells.push(cell);
+        }
+
+        if any_cell && directive_only {
+            for c_off in 0..cols_in_range {
+                let c = col_first + c_off;
+                if let Some(CData::String(s)) = range.get((r, c)) {
+                    if let Some(directives) = parse_directive_cell(s) {
+                        for d in directives {
+                            match d {
+                                Directive::Repeat(dir) => pending_direction = dir,
+                                Directive::Block { .. } => {} // already consumed by outer scan
+                                other => pending_directives.push(other),
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if !has_source_template && !has_subtotal {
+            if let Some(RowPlan::ExpandDown {
+                col_range: Some(range_inner),
+                side_rows,
+                ..
+            }) = row_plans.last_mut()
+            {
+                let range_inner = *range_inner;
+                if !any_cell {
+                    side_rows.push(row_cells);
+                    continue;
+                }
+                if cells_only_outside_range(&row_cells, range_inner) {
+                    side_rows.push(row_cells);
+                    continue;
+                }
+                let outside = cells_isolate_outside(&row_cells, range_inner);
+                let inside = cells_isolate_inside(&row_cells, range_inner);
+                let has_inside = inside.iter().any(|c| !matches!(c, CellSource::Empty));
+                let has_outside = outside.iter().any(|c| !matches!(c, CellSource::Empty));
+                if has_inside && has_outside {
+                    side_rows.push(outside);
+                    row_plans.push(RowPlan::Static(inside));
+                    continue;
+                }
+            }
+            if !any_cell {
+                continue;
+            }
+        }
+
+        if has_subtotal && !has_source_template {
+            if let Some(RowPlan::ExpandDown { subtotal_rows, .. }) = row_plans.last_mut() {
+                subtotal_rows.push(row_cells);
+                continue;
+            }
+        }
+
+        let row_plan = if has_source_template {
+            let directives = std::mem::take(&mut pending_directives);
+            let col_range = compute_template_col_range(&row_cells);
+            let plan = match pending_direction {
+                Direction::Down => RowPlan::ExpandDown {
+                    cells: row_cells,
+                    directives,
+                    subtotal_rows: Vec::new(),
+                    side_rows: Vec::new(),
+                    col_range,
+                },
+                Direction::Right => RowPlan::ExpandRight {
+                    cells: row_cells,
+                    directives,
+                },
+            };
+            pending_direction = Direction::Down;
+            plan
+        } else {
+            if let Some(RowPlan::ExpandDown {
+                col_range: Some(range_inner),
+                side_rows,
+                ..
+            }) = row_plans.last_mut()
+            {
+                if cells_only_outside_range(&row_cells, *range_inner) {
+                    side_rows.push(row_cells);
+                    continue;
+                }
+            }
+            RowPlan::Static(row_cells)
+        };
+        row_plans.push(row_plan);
+    }
+    Ok(row_plans)
 }
 
 /// Wrap `inputs` as a single `Value::Map` so the evaluator can resolve

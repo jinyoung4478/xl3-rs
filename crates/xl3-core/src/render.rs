@@ -198,6 +198,51 @@ fn render_sheet(
     lists_value: &Value,
     named_sources: &HashMap<String, Value>,
 ) -> Result<RenderedSheet> {
+    // ADR-0068/0069 multi-block sheet: render each sub-block as if it
+    // were its own single-block sheet, then merge column-by-column.
+    if !plan.sub_blocks.is_empty() {
+        let mut sub_outputs: Vec<(usize, usize, Vec<Vec<Value>>)> = Vec::new();
+        for sub in &plan.sub_blocks {
+            let sub_plan = SheetPlan {
+                name: plan.name.clone(),
+                rows: sub.rows.clone(),
+                sub_blocks: Vec::new(),
+                n_cols: sub.col_last - sub.col_first + 1,
+            };
+            let sub_rendered = render_sheet(
+                &sub_plan,
+                source,
+                inputs_value,
+                lists_value,
+                named_sources,
+            )?;
+            sub_outputs.push((sub.col_first, sub.col_last, sub_rendered.rows));
+        }
+        let max_rows = sub_outputs
+            .iter()
+            .map(|(_, _, r)| r.len())
+            .max()
+            .unwrap_or(0);
+        let n_cols = plan.n_cols.max(1);
+        let mut merged: Vec<Vec<Value>> = (0..max_rows)
+            .map(|_| vec![Value::Empty; n_cols])
+            .collect();
+        for (col_first, _col_last, sub_rows) in sub_outputs {
+            for (r_idx, sub_row) in sub_rows.iter().enumerate() {
+                for (c_off, v) in sub_row.iter().enumerate() {
+                    let c = col_first + c_off;
+                    if c < n_cols {
+                        merged[r_idx][c] = v.clone();
+                    }
+                }
+            }
+        }
+        return Ok(RenderedSheet {
+            name: plan.name.clone(),
+            rows: merged,
+        });
+    }
+
     let mut rows: Vec<Vec<Value>> = Vec::new();
     for row in &plan.rows {
         match row {
@@ -691,6 +736,7 @@ fn apply_directives(
             Directive::Repeat(_)
             | Directive::Source(_)
             | Directive::Group(_)
+            | Directive::Block { .. }
             | Directive::Unhandled(_) => {
                 // Repeat: direction is absorbed by the planner.
                 // Source: applied earlier by `resolve_block_rows`.

@@ -561,6 +561,18 @@ fn fixture_144_block_side_cells_after_block() {
         .expect("fixture 144 should pass");
 }
 
+#[test]
+fn fixture_147_multi_block_different_sources() {
+    run_fixture("147-multi-block-different-sources")
+        .expect("fixture 147 should pass");
+}
+
+#[test]
+fn fixture_154_multi_block_per_block_filter() {
+    run_fixture("154-multi-block-per-block-filter")
+        .expect("fixture 154 should pass");
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {
