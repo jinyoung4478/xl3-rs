@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/xl3-core"]
+# xl3-wasm is added in Phase 2.
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/jinyoung4478/xl3-rs"
+rust-version = "1.83"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = false
+strip = "debuginfo"
+
+# A "measurement" profile: release-level codegen, but with debug symbols kept
+# so flamegraphs and instruments traces are readable.
+[profile.bench-release]
+inherits = "release"
+debug = true
+strip = "none"

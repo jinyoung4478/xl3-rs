@@ -1,0 +1,20 @@
+[package]
+name = "xl3-core"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Pure-Rust XLSX template rendering engine (acceleration core for xl3)"
+publish = false
+
+[dependencies]
+anyhow = "1.0.102"
+calamine = "0.35"
+rust_xlsxwriter = "0.95"
+# Filled in by `cargo add` so we pick up the latest patch versions.
+
+[dev-dependencies]
+
+[lib]
+path = "src/lib.rs"

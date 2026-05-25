@@ -1,0 +1,20 @@
+target/
+pkg/
+node_modules/
+*.cpuprofile
+cpu-prof/
+.DS_Store
+
+# Build outputs
+*.wasm
+*.wat
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Measurement / temp output
+out/
+tmp/
+*.local.xlsx
