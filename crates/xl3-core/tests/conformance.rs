@@ -210,6 +210,16 @@ fn fixture_065_input_text_default_applied() {
 }
 
 #[test]
+fn fixture_003_list_sheet_filter() {
+    run_fixture("003-list-sheet-filter").expect("fixture 003 should pass");
+}
+
+#[test]
+fn fixture_045_list_sheet_not_in_filter() {
+    run_fixture("045-list-sheet-not-in-filter").expect("fixture 045 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

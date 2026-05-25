@@ -81,6 +81,10 @@ pub struct WorkbookPlan {
     /// Per-input default value from the `__inputs__` sheet, keyed by
     /// input name. Host inputs (if any) override these at render time.
     pub inputs: HashMap<String, Value>,
+    /// Named value lists from the `__lists__` sheet. Each column is a
+    /// list — header is the list name, cells below are the values.
+    /// Used by `@filter [Field] in __lists__[Name]`.
+    pub lists: HashMap<String, Vec<Value>>,
 }
 
 const RESERVED_SHEETS: &[&str] = &["__config__", "__inputs__", "__lists__", "__sources__"];
@@ -283,10 +287,34 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
         }
     }
 
+    // Parse `__lists__` if present. Each column is a list (header is
+    // its name, values are the cells below until the first blank).
+    let mut lists: HashMap<String, Vec<Value>> = HashMap::new();
+    if sheet_names_set(&wb).contains("__lists__") {
+        if let Ok(range) = wb.worksheet_range("__lists__") {
+            let (rows, cols) = range.get_size();
+            for c in 0..cols {
+                let header = match range.get((0, c)) {
+                    Some(CData::String(s)) if !s.is_empty() => s.clone(),
+                    _ => continue,
+                };
+                let mut values = Vec::new();
+                for r in 1..rows {
+                    match range.get((r, c)) {
+                        Some(CData::Empty) | None => break,
+                        Some(other) => values.push(Value::from_calamine(other)),
+                    }
+                }
+                lists.insert(header, values);
+            }
+        }
+    }
+
     Ok(WorkbookPlan {
         config,
         sheets,
         inputs,
+        lists,
     })
 }
 
@@ -302,4 +330,15 @@ fn sheet_names_set<R: std::io::Read + std::io::Seek>(
 /// `inputs` map *before* this call.
 pub fn inputs_to_value(inputs: &HashMap<String, Value>) -> Value {
     Value::Map(Arc::new(inputs.clone()))
+}
+
+/// Wrap `lists` as a `Value::Map` whose values are `Value::List` —
+/// matches the `__lists__[Name]` lookup shape (namespace is a map of
+/// name → list, and `<ns>[key]` resolves to a list).
+pub fn lists_to_value(lists: &HashMap<String, Vec<Value>>) -> Value {
+    let inner: HashMap<String, Value> = lists
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::List(Arc::new(v.clone()))))
+        .collect();
+    Value::Map(Arc::new(inner))
 }

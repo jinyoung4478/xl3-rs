@@ -17,7 +17,7 @@ use crate::eval::{
 };
 use crate::output::{write_workbook, RenderedSheet};
 use crate::plan::{
-    inputs_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
+    inputs_to_value, lists_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
 };
 use crate::source::{CalamineSourceReader, SourceData, SourceReader};
 use crate::value::Value;
@@ -42,9 +42,10 @@ pub fn render(plan: &WorkbookPlan, source: &SourceData) -> Result<Vec<u8>> {
     // between expansion rows. The renderer slots them into every ctx
     // it builds.
     let inputs_value = inputs_to_value(&plan.inputs);
+    let lists_value = lists_to_value(&plan.lists);
     let mut out_sheets = Vec::with_capacity(plan.sheets.len());
     for sheet in &plan.sheets {
-        out_sheets.push(render_sheet(sheet, source, &inputs_value)?);
+        out_sheets.push(render_sheet(sheet, source, &inputs_value, &lists_value)?);
     }
     write_workbook(&out_sheets)
 }
@@ -53,27 +54,34 @@ fn render_sheet(
     plan: &SheetPlan,
     source: &SourceData,
     inputs_value: &Value,
+    lists_value: &Value,
 ) -> Result<RenderedSheet> {
     let mut rows: Vec<Vec<Value>> = Vec::new();
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
-                rows.push(render_static_row(cells, inputs_value)?);
+                rows.push(render_static_row(cells, inputs_value, lists_value)?);
             }
             RowPlan::ExpandDown { cells, directives } => {
-                let effective = apply_directives(&source.rows, directives)?;
+                let effective = apply_directives(&source.rows, directives, lists_value)?;
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
                 for (idx, source_row) in effective.iter().enumerate() {
                     let mut ctx: EvalContext = source_row.clone();
                     inject_rows(&mut ctx, Arc::clone(&rows_handle));
                     inject_rownum(&mut ctx, idx + 1);
                     ctx.insert("__inputs__".to_string(), inputs_value.clone());
+                    ctx.insert("__lists__".to_string(), lists_value.clone());
                     rows.push(render_template_row(cells, &ctx)?);
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
-                let effective = apply_directives(&source.rows, directives)?;
-                rows.push(render_expand_right_row(cells, &effective, inputs_value)?);
+                let effective = apply_directives(&source.rows, directives, lists_value)?;
+                rows.push(render_expand_right_row(
+                    cells,
+                    &effective,
+                    inputs_value,
+                    lists_value,
+                )?);
             }
         }
     }
@@ -86,6 +94,7 @@ fn render_sheet(
 fn apply_directives(
     rows: &[HashMap<String, Value>],
     directives: &[Directive],
+    lists_value: &Value,
 ) -> Result<Vec<HashMap<String, Value>>> {
     let mut current: Vec<HashMap<String, Value>> = rows.to_vec();
     for d in directives {
@@ -93,7 +102,12 @@ fn apply_directives(
             Directive::Filter(expr) => {
                 let mut kept = Vec::with_capacity(current.len());
                 for row in current.drain(..) {
-                    let v = eval_expression_str(expr, &row)?;
+                    // Filter expressions may reference `__lists__[Name]`
+                    // for set-membership tests. Slot the lists value
+                    // into the per-row ctx before evaluating.
+                    let mut ctx = row.clone();
+                    ctx.insert("__lists__".to_string(), lists_value.clone());
+                    let v = eval_expression_str(expr, &ctx)?;
                     if is_truthy(&v) {
                         kept.push(row);
                     }
@@ -130,6 +144,7 @@ fn render_expand_right_row(
     cells: &[CellSource],
     rows: &[HashMap<String, Value>],
     inputs_value: &Value,
+    lists_value: &Value,
 ) -> Result<Vec<Value>> {
     let mut out = Vec::with_capacity(cells.len() + rows.len());
     let mut emitted_expansion = false;
@@ -150,6 +165,7 @@ fn render_expand_right_row(
                     inject_rows(&mut ctx, Arc::clone(&rows_handle));
                     inject_rownum(&mut ctx, idx + 1);
                     ctx.insert("__inputs__".to_string(), inputs_value.clone());
+                    ctx.insert("__lists__".to_string(), lists_value.clone());
                     out.push(eval_cell(t, &ctx)?);
                 }
             }
@@ -158,13 +174,18 @@ fn render_expand_right_row(
     Ok(out)
 }
 
-fn render_static_row(cells: &[CellSource], inputs_value: &Value) -> Result<Vec<Value>> {
+fn render_static_row(
+    cells: &[CellSource],
+    inputs_value: &Value,
+    lists_value: &Value,
+) -> Result<Vec<Value>> {
     // "Static" rows can still contain `{{ ... }}` blocks that refer to
     // reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`).
     // xl3 evaluates these with an empty-row context plus the reserved
     // namespaces — no source row, no aggregate handle.
     let mut ctx: EvalContext = HashMap::new();
     ctx.insert("__inputs__".to_string(), inputs_value.clone());
+    ctx.insert("__lists__".to_string(), lists_value.clone());
     let mut out = Vec::with_capacity(cells.len());
     for c in cells {
         let value = match c {

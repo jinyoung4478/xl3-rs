@@ -117,6 +117,8 @@ enum Op {
     And,
     Or,
     Not,
+    In,
+    NotIn,
 }
 
 fn tokenize(input: &str) -> Result<Vec<Tok>> {
@@ -230,6 +232,12 @@ fn tokenize(input: &str) -> Result<Vec<Tok>> {
                 if peek_eq(bytes, i + 1, b'=') {
                     out.push(Tok::Op(Op::Neq));
                     i += 2;
+                } else if starts_with_word(bytes, i + 1, b"in") {
+                    // `!in` (xl3 set-membership negation). Treated as a
+                    // single binary operator regardless of whitespace
+                    // between `!` and `in`.
+                    out.push(Tok::Op(Op::NotIn));
+                    i += 1 + 2;
                 } else {
                     out.push(Tok::Op(Op::Not));
                     i += 1;
@@ -268,6 +276,10 @@ fn tokenize(input: &str) -> Result<Vec<Tok>> {
                 let tok = match s {
                     "TRUE" | "true" | "True" => Tok::Bool(true),
                     "FALSE" | "false" | "False" => Tok::Bool(false),
+                    // `in` is a binary operator (xl3 @filter set
+                    // membership). The lexer surfaces it so the parser
+                    // can place it at comparison precedence.
+                    "in" => Tok::Op(Op::In),
                     _ => Tok::Ident(s.to_string()),
                 };
                 out.push(tok);
@@ -284,6 +296,28 @@ fn peek_eq(bytes: &[u8], idx: usize, target: u8) -> bool {
 
 fn peek_is_digit(bytes: &[u8], idx: usize) -> bool {
     bytes.get(idx).map(|b| b.is_ascii_digit()).unwrap_or(false)
+}
+
+/// Returns true if the byte slice from `start` matches `word` exactly
+/// and the next byte (if any) is *not* an identifier character. Used
+/// by the lexer to recognise `!in` only when "in" stands alone.
+fn starts_with_word(bytes: &[u8], start: usize, word: &[u8]) -> bool {
+    // skip optional whitespace between `!` and `in`
+    let mut i = start;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i + word.len() > bytes.len() {
+        return false;
+    }
+    if &bytes[i..i + word.len()] != word {
+        return false;
+    }
+    let after = bytes.get(i + word.len());
+    match after {
+        Some(c) if c.is_ascii_alphanumeric() || *c == b'_' => false,
+        _ => true,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +492,7 @@ fn op_precedence(op: Op) -> Option<u8> {
         Op::Or => 1,
         Op::And => 2,
         Op::Eq | Op::Neq => 3,
-        Op::Lt | Op::Gt | Op::Le | Op::Ge => 4,
+        Op::Lt | Op::Gt | Op::Le | Op::Ge | Op::In | Op::NotIn => 4,
         Op::Concat => 5,
         Op::Add | Op::Sub => 6,
         Op::Mul | Op::Div => 7,
@@ -478,18 +512,13 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
         Ast::Bracket(name) => Ok(ctx.get(name).cloned().unwrap_or(Value::Empty)),
         Ast::ReservedRef(ns, key) => {
             // Look up the namespace in ctx — `__inputs__`, `__lists__`,
-            // `__config__`. Each is a Value::Map / Value::List handle
-            // injected by the renderer. Missing namespace => Empty,
-            // mirroring xl3's "permissive read" of an unset key.
+            // `__config__`. Each is a Value::Map injected by the
+            // renderer. Inner values may themselves be `Value::List`
+            // (for `__lists__[Name]` which resolves to the named list).
+            // Missing namespace => Empty, mirroring xl3's permissive
+            // read of an unset key.
             match ctx.get(ns) {
                 Some(Value::Map(m)) => Ok(m.get(key).cloned().unwrap_or(Value::Empty)),
-                Some(Value::List(_)) => {
-                    // `__lists__[Name]` returns the whole list — the
-                    // namespace IS the list, but the corpus uses the
-                    // `__lists__[Name]` form (a list of lists). Treat
-                    // this branch as a misconfiguration for now.
-                    bail!("namespace {ns:?} resolved to a list, but a Map was expected")
-                }
                 _ => Ok(Value::Empty),
             }
         }
@@ -670,8 +699,25 @@ fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {
         Op::Neq => Value::Bool(compare(l, r)? != 0),
         Op::And => Value::Bool(is_truthy(l) && is_truthy(r)),
         Op::Or => Value::Bool(is_truthy(l) || is_truthy(r)),
+        Op::In => Value::Bool(member_of(l, r)),
+        Op::NotIn => Value::Bool(!member_of(l, r)),
         Op::Not => unreachable!("unary not handled in parse_prefix"),
     })
+}
+
+/// Set-membership test used by `in` / `!in`. RHS is expected to be a
+/// `Value::List` (typically `__lists__[Name]`). If RHS is some other
+/// shape, fall back to equality so the operator still behaves sanely
+/// for a single-value RHS.
+fn member_of(needle: &Value, haystack: &Value) -> bool {
+    match haystack {
+        Value::List(list) => list.iter().any(|item| values_equal(item, needle)),
+        _ => values_equal(haystack, needle),
+    }
+}
+
+fn values_equal(a: &Value, b: &Value) -> bool {
+    compare(a, b).map(|c| c == 0).unwrap_or(false)
 }
 
 fn coerce_number(v: &Value) -> Result<f64> {
