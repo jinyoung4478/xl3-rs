@@ -17,6 +17,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
+use crate::directives::{parse_directive_cell, Direction, Directive};
 use crate::value::Value;
 
 #[derive(Debug, Default, Clone)]
@@ -54,6 +55,10 @@ impl CellSource {
 pub enum RowPlan {
     Static(Vec<CellSource>),
     ExpandDown(Vec<CellSource>),
+    /// Same row, repeated *to the right* once per source row. The first
+    /// template cell in the row is the anchor — its column is the
+    /// starting column of the expanded run.
+    ExpandRight(Vec<CellSource>),
 }
 
 #[derive(Debug, Clone)]
@@ -124,25 +129,67 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
             .with_context(|| format!("read template sheet {name:?}"))?;
         let (rows, cols) = range.get_size();
         let mut row_plans = Vec::with_capacity(rows);
+        // Pending direction from the last directive row. xl3 attaches
+        // a `@repeat right` (or down) to the *next* data row.
+        let mut pending_direction = Direction::Down;
         for r in 0..rows {
             let mut row_cells = Vec::with_capacity(cols);
             let mut has_template = false;
+            let mut directive_only = true;
+            let mut any_cell = false;
             for c in 0..cols {
                 let cell = match range.get((r, c)) {
                     None | Some(CData::Empty) => CellSource::Empty,
                     Some(CData::String(s)) if cell_is_template_text(s) => {
-                        has_template = true;
-                        CellSource::Template(s.clone())
+                        any_cell = true;
+                        if parse_directive_cell(s).is_some() {
+                            // Directive cells don't surface in output;
+                            // they contribute their metadata instead.
+                            CellSource::Empty
+                        } else {
+                            has_template = true;
+                            directive_only = false;
+                            CellSource::Template(s.clone())
+                        }
                     }
-                    Some(other) => CellSource::Literal(Value::from_calamine(other)),
+                    Some(other) => {
+                        any_cell = true;
+                        directive_only = false;
+                        CellSource::Literal(Value::from_calamine(other))
+                    }
                 };
                 row_cells.push(cell);
             }
-            row_plans.push(if has_template {
-                RowPlan::ExpandDown(row_cells)
+
+            // A row whose template cells are *all* directive-only is a
+            // directive row — pull its directives into `pending_*` and
+            // omit it from the plan.
+            if any_cell && directive_only {
+                for c in 0..cols {
+                    if let Some(CData::String(s)) = range.get((r, c)) {
+                        if let Some(directives) = parse_directive_cell(s) {
+                            for d in directives {
+                                if let Directive::Repeat(dir) = d {
+                                    pending_direction = dir;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let row_plan = if has_template {
+                let plan = match pending_direction {
+                    Direction::Down => RowPlan::ExpandDown(row_cells),
+                    Direction::Right => RowPlan::ExpandRight(row_cells),
+                };
+                pending_direction = Direction::Down; // reset after binding
+                plan
             } else {
                 RowPlan::Static(row_cells)
-            });
+            };
+            row_plans.push(row_plan);
         }
         sheets.push(SheetPlan {
             name,

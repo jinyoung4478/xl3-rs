@@ -46,9 +46,12 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
             }
             RowPlan::ExpandDown(cells) => {
                 for source_row in &source.rows {
-                    let mut ctx: EvalContext = source_row.clone();
-                    rows.push(render_template_row(cells, &mut ctx)?);
+                    let ctx: EvalContext = source_row.clone();
+                    rows.push(render_template_row(cells, &ctx)?);
                 }
+            }
+            RowPlan::ExpandRight(cells) => {
+                rows.push(render_expand_right_row(cells, source)?);
             }
         }
     }
@@ -56,6 +59,30 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
         name: plan.name.clone(),
         rows,
     })
+}
+
+fn render_expand_right_row(cells: &[CellSource], source: &SourceData) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(cells.len() + source.rows.len());
+    let mut emitted_expansion = false;
+    for cell in cells {
+        match cell {
+            CellSource::Empty => out.push(Value::Empty),
+            CellSource::Literal(v) => out.push(v.clone()),
+            CellSource::Template(t) => {
+                if emitted_expansion {
+                    anyhow::bail!(
+                        "multi-column @repeat right (two template cells in one expansion row) not yet supported"
+                    );
+                }
+                emitted_expansion = true;
+                for source_row in &source.rows {
+                    let ctx: EvalContext = source_row.clone();
+                    out.push(eval_cell(t, &ctx)?);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn render_static_row(cells: &[CellSource]) -> Vec<Value> {

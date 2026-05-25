@@ -14,6 +14,7 @@
 //! support, etc.) will grow as later fixtures are wired in. See `PLAN.md`
 //! §5 Phase 1 for the broader roadmap.
 
+pub mod directives;
 pub mod eval;
 pub mod output;
 pub mod plan;

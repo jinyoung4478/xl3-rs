@@ -184,6 +184,11 @@ fn fixture_002_if_function() {
 }
 
 #[test]
+fn fixture_004_repeat_right_default() {
+    run_fixture("004-repeat-right-default").expect("fixture 004 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
