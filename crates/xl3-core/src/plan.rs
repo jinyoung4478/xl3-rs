@@ -136,9 +136,13 @@ pub enum CellSource {
     /// Contains at least one `{{ ... }}` expression block. `num_fmt`
     /// is the classified numFmt of the underlying *template* cell,
     /// used by ADR-0003 single-expression coercion at render time.
+    /// `format_code` is the raw numFmt string from the template (e.g.
+    /// `"0.00"` or `"yyyy-mm-dd"`) — preserved so the output writer
+    /// can emit the same display format on the rendered cell.
     Template {
         text: String,
         num_fmt: NumFmtKind,
+        format_code: Option<String>,
     },
     /// `{{ @subtotal <FN>(<ColumnRef>) }}` — emitted at the end of
     /// each group when the enclosing block has a `@group` directive.
@@ -704,13 +708,15 @@ fn build_row_plans_for_range(
                         if template_depends_on_source_row(s, &exclude_named) {
                             has_source_template = true;
                         }
-                        let num_fmt = styles
-                            .format_code(sheet_name, r as u32, c as u32)
-                            .map(|s| styles::classify_num_fmt(&s))
+                        let format_code = styles.format_code(sheet_name, r as u32, c as u32);
+                        let num_fmt = format_code
+                            .as_deref()
+                            .map(styles::classify_num_fmt)
                             .unwrap_or(NumFmtKind::General);
                         CellSource::Template {
                             text: s.clone(),
                             num_fmt,
+                            format_code,
                         }
                     }
                 }

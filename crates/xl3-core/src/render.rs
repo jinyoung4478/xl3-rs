@@ -298,7 +298,8 @@ fn render_sheet(
     // ADR-0068/0069 multi-block sheet: render each sub-block as if it
     // were its own single-block sheet, then merge column-by-column.
     if !plan.sub_blocks.is_empty() {
-        let mut sub_outputs: Vec<(usize, usize, Vec<Vec<Value>>)> = Vec::new();
+        let mut sub_outputs: Vec<(usize, usize, Vec<Vec<Value>>, Vec<Vec<Option<String>>>)> =
+            Vec::new();
         for sub in &plan.sub_blocks {
             let sub_plan = SheetPlan {
                 name: plan.name.clone(),
@@ -313,18 +314,26 @@ fn render_sheet(
                 lists_value,
                 named_sources,
             )?;
-            sub_outputs.push((sub.col_first, sub.col_last, sub_rendered.rows));
+            sub_outputs.push((
+                sub.col_first,
+                sub.col_last,
+                sub_rendered.rows,
+                sub_rendered.formats,
+            ));
         }
         let max_rows = sub_outputs
             .iter()
-            .map(|(_, _, r)| r.len())
+            .map(|(_, _, r, _)| r.len())
             .max()
             .unwrap_or(0);
         let n_cols = plan.n_cols.max(1);
         let mut merged: Vec<Vec<Value>> = (0..max_rows)
             .map(|_| vec![Value::Empty; n_cols])
             .collect();
-        for (col_first, _col_last, sub_rows) in sub_outputs {
+        let mut merged_formats: Vec<Vec<Option<String>>> = (0..max_rows)
+            .map(|_| vec![None; n_cols])
+            .collect();
+        for (col_first, _col_last, sub_rows, sub_formats) in sub_outputs {
             for (r_idx, sub_row) in sub_rows.iter().enumerate() {
                 for (c_off, v) in sub_row.iter().enumerate() {
                     let c = col_first + c_off;
@@ -332,15 +341,25 @@ fn render_sheet(
                         merged[r_idx][c] = v.clone();
                     }
                 }
+                if let Some(sub_fr) = sub_formats.get(r_idx) {
+                    for (c_off, f) in sub_fr.iter().enumerate() {
+                        let c = col_first + c_off;
+                        if c < n_cols {
+                            merged_formats[r_idx][c] = f.clone();
+                        }
+                    }
+                }
             }
         }
         return Ok(RenderedSheet {
             name: plan.name.clone(),
             rows: merged,
+            formats: merged_formats,
         });
     }
 
     let mut rows: Vec<Vec<Value>> = Vec::new();
+    let mut formats: Vec<Vec<Option<String>>> = Vec::new();
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
@@ -350,6 +369,7 @@ fn render_sheet(
                     lists_value,
                     named_sources,
                 )?);
+                formats.push(row_formats(cells));
             }
             RowPlan::ExpandDown {
                 cells,
@@ -379,6 +399,7 @@ fn render_sheet(
                 let emit_expansion =
                     |group_rows: &Vec<HashMap<String, Value>>,
                      rows: &mut Vec<Vec<Value>>,
+                     formats: &mut Vec<Vec<Option<String>>>,
                      global_idx: &mut usize|
                      -> Result<()> {
                         for (iter_idx, source_row) in group_rows.iter().enumerate() {
@@ -388,9 +409,6 @@ fn render_sheet(
                             inject_rownum(&mut ctx, *global_idx);
                             ctx.insert("__inputs__".to_string(), inputs_value.clone());
                             ctx.insert("__lists__".to_string(), lists_value.clone());
-                            // ADR-0012: when `@source Name` is active,
-                            // `Name[Col]` should resolve to the current
-                            // row's column (active source = default).
                             if let Some(name) = &active_source {
                                 ctx.insert(
                                     name.clone(),
@@ -398,29 +416,22 @@ fn render_sheet(
                                 );
                             }
                             inject_named_sources(&mut ctx, named_sources);
-                            // ADR-0066 column-scoped splice: side cells
-                            // outside the expansion's col_range come
-                            // from the *original* row at this iter index
-                            // (iter 0 → expansion row itself, iter N+1
-                            // → side_rows[N], or Empty if exhausted).
                             let effective_cells = compose_iteration_cells(
                                 cells, side_rows, *col_range, iter_idx,
                             );
                             rows.push(render_template_row(&effective_cells, &ctx)?);
+                            formats.push(row_formats(&effective_cells));
                         }
                         Ok(())
                     };
 
                 if group_fields.is_empty() {
-                    // No grouping: emit every row, then any trailing
-                    // subtotal rows once over the whole block.
-                    emit_expansion(&effective, &mut rows, &mut global_idx)?;
-                    // ADR-0066: side_rows that the expansion didn't
-                    // consume (one per source row beyond the first) are
-                    // post-block outside-only rows. Their template-row
-                    // position keeps them at their original spot, so we
-                    // emit them right after the expansion before any
-                    // subtotal / inside-footer rows.
+                    emit_expansion(
+                        &effective,
+                        &mut rows,
+                        &mut formats,
+                        &mut global_idx,
+                    )?;
                     let consumed = effective.len().saturating_sub(1);
                     if side_rows.len() > consumed {
                         for extra in &side_rows[consumed..] {
@@ -430,6 +441,7 @@ fn render_sheet(
                                 lists_value,
                                 named_sources,
                             )?);
+                            formats.push(row_formats(extra));
                         }
                     }
                     for subtotal_cells in subtotal_rows {
@@ -440,6 +452,7 @@ fn render_sheet(
                             lists_value,
                             named_sources,
                         )?);
+                        formats.push(row_formats(subtotal_cells));
                     }
                 } else {
                     render_grouped(
@@ -451,6 +464,7 @@ fn render_sheet(
                         side_rows,
                         *col_range,
                         &mut rows,
+                        &mut formats,
                         &mut global_idx,
                         &rows_handle,
                         inputs_value,
@@ -470,13 +484,34 @@ fn render_sheet(
                     lists_value,
                     named_sources,
                 )?);
+                formats.push(row_formats_for_expand_right(cells, effective.len()));
             }
         }
     }
     Ok(RenderedSheet {
         name: plan.name.clone(),
         rows,
+        formats,
     })
+}
+
+/// ExpandRight emits one row whose template cell is repeated for each
+/// source row in the block. The format vec mirrors that shape — for
+/// each input `CellSource`, emit the format code once for literals /
+/// empties or `n_iters` times for the (single) Template cell.
+fn row_formats_for_expand_right(cells: &[CellSource], n_iters: usize) -> Vec<Option<String>> {
+    let mut out = Vec::with_capacity(cells.len() + n_iters);
+    for cell in cells {
+        match cell {
+            CellSource::Template { format_code, .. } => {
+                for _ in 0..n_iters {
+                    out.push(format_code.clone());
+                }
+            }
+            _ => out.push(cell_format(cell)),
+        }
+    }
+    out
 }
 
 /// Resolve which row set the expansion block iterates over. With no
@@ -548,6 +583,7 @@ fn render_grouped(
     side_rows: &[Vec<CellSource>],
     col_range: Option<(usize, usize)>,
     out_rows: &mut Vec<Vec<Value>>,
+    out_formats: &mut Vec<Vec<Option<String>>>,
     global_idx: &mut usize,
     rows_handle: &Arc<Vec<HashMap<String, Value>>>,
     inputs_value: &Value,
@@ -556,7 +592,6 @@ fn render_grouped(
     active_source: Option<&str>,
 ) -> Result<()> {
     if depth == group_fields.len() {
-        // Leaf — emit every row through the expansion template.
         for (iter_idx, source_row) in rows.iter().enumerate() {
             *global_idx += 1;
             let mut ctx: EvalContext = source_row.clone();
@@ -571,6 +606,7 @@ fn render_grouped(
             let effective_cells =
                 compose_iteration_cells(cells, side_rows, col_range, iter_idx);
             out_rows.push(render_template_row(&effective_cells, &ctx)?);
+            out_formats.push(row_formats(&effective_cells));
         }
         return Ok(());
     }
@@ -585,6 +621,7 @@ fn render_grouped(
             side_rows,
             col_range,
             out_rows,
+            out_formats,
             global_idx,
             rows_handle,
             inputs_value,
@@ -592,9 +629,6 @@ fn render_grouped(
             named_sources,
             active_source,
         )?;
-        // Subtotal slot index for *this* level (the level we're closing).
-        // Innermost = group_fields.len() - 1 → slot 0.
-        // Outermost = depth 0 → slot group_fields.len() - 1.
         let slot = group_fields.len() - 1 - depth;
         if slot < subtotal_rows.len() {
             let group_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(group.clone());
@@ -605,6 +639,7 @@ fn render_grouped(
                 lists_value,
                 named_sources,
             )?);
+            out_formats.push(row_formats(&subtotal_rows[slot]));
         }
     }
     Ok(())
@@ -631,7 +666,7 @@ fn render_subtotal_row(
         let value = match cell {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
-            CellSource::Template { text, num_fmt } => {
+            CellSource::Template { text, num_fmt, .. } => {
                 coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
             }
             CellSource::Subtotal { aggregate, field } => {
@@ -859,7 +894,7 @@ fn render_expand_right_row(
         match cell {
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
-            CellSource::Template { text, num_fmt } => {
+            CellSource::Template { text, num_fmt, .. } => {
                 if emitted_expansion {
                     anyhow::bail!(
                         "multi-column @repeat right (two template cells in one expansion row) not yet supported"
@@ -887,6 +922,20 @@ fn render_expand_right_row(
     Ok(out)
 }
 
+/// Per-row format codes, parallel to the row's values. `cell_format`
+/// reads the format_code field off a `CellSource::Template`; literals
+/// and empties carry `None` until the literal-style pipeline lands.
+fn cell_format(cell: &CellSource) -> Option<String> {
+    match cell {
+        CellSource::Template { format_code, .. } => format_code.clone(),
+        _ => None,
+    }
+}
+
+fn row_formats(cells: &[CellSource]) -> Vec<Option<String>> {
+    cells.iter().map(cell_format).collect()
+}
+
 fn render_static_row(
     cells: &[CellSource],
     inputs_value: &Value,
@@ -907,7 +956,7 @@ fn render_static_row(
         let value = match c {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
-            CellSource::Template { text, num_fmt } => {
+            CellSource::Template { text, num_fmt, .. } => {
                 coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
             }
             CellSource::Subtotal { .. } => Value::Empty,
@@ -923,7 +972,7 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
         match cell {
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
-            CellSource::Template { text, num_fmt } => {
+            CellSource::Template { text, num_fmt, .. } => {
                 out.push(coerce_for_num_fmt(eval_cell(text, ctx)?, *num_fmt))
             }
             CellSource::Subtotal { .. } => out.push(Value::Empty),
