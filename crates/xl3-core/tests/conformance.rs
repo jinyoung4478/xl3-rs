@@ -796,11 +796,11 @@ fn fixture_023_today_utc_dynamic() {
         .expect("fixture 023 should produce today's UTC date in the dynamic cell");
 }
 
-// fixture 006 (filename-forbidden-chars) exercises both filename
-// sanitisation (done — see render::sanitize_filename) and per-file
-// rendering with `output_file_pattern` group keys injected into the
-// static ctx (pending — needs the file-group splitter). Re-enable once
-// the file-group splitter lands.
+#[test]
+fn fixture_006_filename_forbidden_chars() {
+    run_fixture("006-filename-forbidden-chars")
+        .expect("fixture 006 should emit a sanitised output filename");
+}
 
 /// Walk every fixture, classify pass / fail / skip, and print a summary.
 /// Always passes — purely informational. The targeted `fixture_NNN_*`

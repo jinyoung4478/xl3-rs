@@ -125,13 +125,61 @@ pub fn render_to_files_with_sources(
     source: &SourceData,
     named_sources: &HashMap<String, SourceData>,
 ) -> Result<Vec<OutputFile>> {
-    // Pre-bundle the reserved-namespace values that don't change
-    // between expansion rows. The renderer slots them into every ctx
-    // it builds.
+    let group_keys = plan.config.file_group_keys();
+    if group_keys.is_empty() {
+        return Ok(vec![render_one_file(
+            plan,
+            source,
+            named_sources,
+            &HashMap::new(),
+        )?]);
+    }
+    // ADR-0002: partition the source by the file-group keys in
+    // first-seen order, render one file per partition. Each partition
+    // inherits the group key values in its static ctx so the template
+    // can reference them as bare identifiers.
+    let mut groups: Vec<(Vec<String>, Vec<HashMap<String, Value>>)> = Vec::new();
+    for row in &source.rows {
+        let values: Vec<String> = group_keys
+            .iter()
+            .map(|k| row.get(k).cloned().unwrap_or(Value::Empty).canonical())
+            .collect();
+        if let Some(g) = groups.iter_mut().find(|g| g.0 == values) {
+            g.1.push(row.clone());
+        } else {
+            groups.push((values, vec![row.clone()]));
+        }
+    }
+    let mut out: Vec<OutputFile> = Vec::with_capacity(groups.len());
+    for (values, rows) in groups {
+        let group_ctx: HashMap<String, Value> = group_keys
+            .iter()
+            .cloned()
+            .zip(values.into_iter().map(Value::String))
+            .collect();
+        let group_source = SourceData {
+            name: source.name.clone(),
+            headers: source.headers.clone(),
+            rows,
+        };
+        out.push(render_one_file(
+            plan,
+            &group_source,
+            named_sources,
+            &group_ctx,
+        )?);
+    }
+    Ok(out)
+}
+
+fn render_one_file(
+    plan: &WorkbookPlan,
+    source: &SourceData,
+    named_sources: &HashMap<String, SourceData>,
+    group_keys: &HashMap<String, Value>,
+) -> Result<OutputFile> {
     let inputs_value = inputs_to_value(&plan.inputs);
     let lists_value = lists_to_value(&plan.lists);
-    // Each named source becomes a `Value::Rows` handle that the
-    // evaluator can aggregate over via `Source[Field]` references.
     let named_source_handles: HashMap<String, Value> = named_sources
         .iter()
         .map(|(name, data)| {
@@ -142,15 +190,15 @@ pub fn render_to_files_with_sources(
     let mut out_sheets = Vec::with_capacity(plan.sheets.len());
     for sheet in &plan.sheets {
         if sheet.name.contains("{{") {
-            // Sheet-name is a template — ADR-0016: split the source by
-            // the evaluated key in first-seen order, emit one rendered
-            // sheet per group.
+            // Sheet-name template (ADR-0016) — partition the group
+            // source again by the sheet-name key.
             let groups = split_source_by_sheet_name(
                 &sheet.name,
                 source,
                 &inputs_value,
                 &lists_value,
                 &named_source_handles,
+                group_keys,
             )?;
             for (group_name, group_source) in groups {
                 let mut rs = render_sheet(
@@ -159,6 +207,7 @@ pub fn render_to_files_with_sources(
                     &inputs_value,
                     &lists_value,
                     &named_source_handles,
+                    group_keys,
                 )?;
                 rs.name = sanitize_sheet_name(&group_name);
                 out_sheets.push(rs);
@@ -170,6 +219,7 @@ pub fn render_to_files_with_sources(
                 &inputs_value,
                 &lists_value,
                 &named_source_handles,
+                group_keys,
             )?);
         }
     }
@@ -179,12 +229,19 @@ pub fn render_to_files_with_sources(
         .output_file_pattern()
         .map(str::to_string)
         .unwrap_or_else(|| "output.xlsx".to_string());
-    // Resolve any `{{ … }}` expressions in the pattern against the
-    // first source row (ADR-0002: filenames evaluate per-file; for a
-    // single-file render there is exactly one row context).
+    // The filename ctx layers (in priority order, lowest first):
+    // group_keys ◁ first source row ◁ reserved namespaces. Group keys
+    // win over the source row so the filename matches the partition's
+    // bucket value exactly.
     let mut warnings: Vec<XtlWarning> = Vec::new();
-    let resolved = if pattern.contains("{{") && !source.rows.is_empty() {
-        let mut ctx: EvalContext = source.rows[0].clone();
+    let resolved = if pattern.contains("{{") {
+        let mut ctx: EvalContext = HashMap::new();
+        if let Some(row) = source.rows.first() {
+            ctx.extend(row.clone());
+        }
+        for (k, v) in group_keys {
+            ctx.insert(k.clone(), v.clone());
+        }
         ctx.insert("__inputs__".to_string(), inputs_value.clone());
         ctx.insert("__lists__".to_string(), lists_value.clone());
         inject_named_sources(&mut ctx, &named_source_handles);
@@ -193,11 +250,11 @@ pub fn render_to_files_with_sources(
         pattern
     };
     let filename = sanitize_filename(&resolved, &mut warnings);
-    Ok(vec![OutputFile {
+    Ok(OutputFile {
         filename,
         data: bytes,
         warnings,
-    }])
+    })
 }
 
 /// Replace the OOXML / Windows forbidden filename characters
@@ -249,10 +306,14 @@ fn split_source_by_sheet_name(
     inputs_value: &Value,
     lists_value: &Value,
     named_sources: &HashMap<String, Value>,
+    group_keys: &HashMap<String, Value>,
 ) -> Result<Vec<(String, SourceData)>> {
     let mut groups: Vec<(String, Vec<HashMap<String, Value>>)> = Vec::new();
     for row in &source.rows {
         let mut ctx: EvalContext = row.clone();
+        for (k, v) in group_keys {
+            ctx.insert(k.clone(), v.clone());
+        }
         ctx.insert("__inputs__".to_string(), inputs_value.clone());
         ctx.insert("__lists__".to_string(), lists_value.clone());
         inject_named_sources(&mut ctx, named_sources);
@@ -294,6 +355,7 @@ fn render_sheet(
     inputs_value: &Value,
     lists_value: &Value,
     named_sources: &HashMap<String, Value>,
+    group_keys: &HashMap<String, Value>,
 ) -> Result<RenderedSheet> {
     // ADR-0068/0069 multi-block sheet: render each sub-block as if it
     // were its own single-block sheet, then merge column-by-column.
@@ -313,6 +375,7 @@ fn render_sheet(
                 inputs_value,
                 lists_value,
                 named_sources,
+                group_keys,
             )?;
             sub_outputs.push((
                 sub.col_first,
@@ -368,6 +431,7 @@ fn render_sheet(
                     inputs_value,
                     lists_value,
                     named_sources,
+                    group_keys,
                 )?);
                 formats.push(row_formats(cells));
             }
@@ -440,6 +504,7 @@ fn render_sheet(
                                 inputs_value,
                                 lists_value,
                                 named_sources,
+                                group_keys,
                             )?);
                             formats.push(row_formats(extra));
                         }
@@ -947,13 +1012,17 @@ fn render_static_row(
     inputs_value: &Value,
     lists_value: &Value,
     named_sources: &HashMap<String, Value>,
+    group_keys: &HashMap<String, Value>,
 ) -> Result<Vec<Value>> {
     // "Static" rows can still contain `{{ ... }}` blocks that refer to
     // reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`)
-    // or aggregates over named sources. xl3 evaluates these with an
-    // empty-row context plus the reserved namespaces — no source row,
-    // no current-block aggregate handle.
+    // or to a file/sheet group key (xl3 ADR-0002 / ADR-0016 — static
+    // ctx inherits the keys the partitioner used). No source row, no
+    // current-block aggregate handle.
     let mut ctx: EvalContext = HashMap::new();
+    for (k, v) in group_keys {
+        ctx.insert(k.clone(), v.clone());
+    }
     ctx.insert("__inputs__".to_string(), inputs_value.clone());
     ctx.insert("__lists__".to_string(), lists_value.clone());
     inject_named_sources(&mut ctx, named_sources);

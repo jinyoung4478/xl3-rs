@@ -37,6 +37,18 @@ impl ConfigMeta {
     pub fn output_file_pattern(&self) -> Option<&str> {
         self.get("output_file_pattern")
     }
+    /// File-group keys extracted from `output_file_pattern` — mirrors
+    /// xl3 (TS)'s `extractGroupKeys`. Each `{{ ... }}` block whose
+    /// payload is a bare identifier (or `[Identifier]`) names a source
+    /// column the renderer should partition output files by.
+    /// Operators, function calls, namespaced refs (`__inputs__[…]`)
+    /// and identifiers starting with `.` or `_` are skipped.
+    pub fn file_group_keys(&self) -> Vec<String> {
+        match self.output_file_pattern() {
+            Some(p) => extract_group_keys(p),
+            None => Vec::new(),
+        }
+    }
     /// Parse the `source_table` config value (xl3 evaluation.md
     /// "Source Data Model"). Returns the default — first row as
     /// header, data continues to the end of the sheet — when the
@@ -46,6 +58,45 @@ impl ConfigMeta {
             .map(parse_source_table)
             .unwrap_or(SourceTable::HeaderRow(1))
     }
+}
+
+fn extract_group_keys(pattern: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut rest = pattern;
+    while let Some(open) = rest.find("{{") {
+        let after_open = &rest[open + 2..];
+        let close = match after_open.find("}}") {
+            Some(c) => c,
+            None => break,
+        };
+        let expr = after_open[..close].trim();
+        rest = &after_open[close + 2..];
+        // Strip a `[...]` wrapper so `{{ [Department] }}` becomes
+        // `Department` — same shape xl3 (TS) emits.
+        let raw = expr
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .map(str::trim)
+            .unwrap_or(expr);
+        if raw.is_empty() {
+            continue;
+        }
+        if raw.starts_with('.') || raw.starts_with('_') {
+            continue;
+        }
+        // Reject anything that looks like an expression rather than a
+        // bare column name.
+        if raw
+            .chars()
+            .any(|c| matches!(c, ' ' | '|' | '+' | '*' | '/' | '-' | '>' | '<' | '=' | '!' | '&' | '(' | ')' | '[' | ']' | ','))
+        {
+            continue;
+        }
+        if !keys.iter().any(|k: &String| k == raw) {
+            keys.push(raw.to_string());
+        }
+    }
+    keys
 }
 
 /// How the source sheet is interpreted.
