@@ -30,6 +30,16 @@ pub enum Directive {
     /// the named external source (declared on `__sources__`) instead
     /// of the default source.
     Source(String),
+    /// `@join <Name> on <Name>[<field>] = <other>[<field>]` — inner
+    /// join the current block's rows against `<Name>`. Phase-1 scope:
+    /// equality on a single column pair. `match_field` is the column
+    /// in the joined (named) source; `primary_field` is the column in
+    /// the current block's row that pairs with it.
+    Join {
+        source: String,
+        match_field: String,
+        primary_field: String,
+    },
     /// Captured but not yet acted on. Lets the planner classify rows as
     /// "directive only" without exploding when richer fixtures hit.
     Unhandled(String),
@@ -99,8 +109,56 @@ fn parse_one(inner: &str) -> Option<Directive> {
                 Directive::Source(name.to_string())
             }
         }
+        "join" => parse_join(rest),
         _ => Directive::Unhandled(format!("@{name} {rest}").trim().to_string()),
     })
+}
+
+fn parse_join(rest: &str) -> Directive {
+    // Grammar (Phase 1 scope):
+    //   <Name> on <Name>[<field>] = <Other>[<field>]
+    // Either side of the `=` may be the join target — we identify it by
+    // matching the `<Name>` that opens the directive.
+    let parts: Vec<&str> = rest.splitn(2, " on ").map(str::trim).collect();
+    if parts.len() != 2 {
+        return Directive::Unhandled(format!("@join {rest}"));
+    }
+    let name = parts[0].to_string();
+    let cond = parts[1];
+    let Some((lhs, rhs)) = cond.split_once('=') else {
+        return Directive::Unhandled(format!("@join {rest}"));
+    };
+    let (lhs_src, lhs_field) = match parse_source_bracket_text(lhs.trim()) {
+        Some(p) => p,
+        None => return Directive::Unhandled(format!("@join {rest}")),
+    };
+    let (rhs_src, rhs_field) = match parse_source_bracket_text(rhs.trim()) {
+        Some(p) => p,
+        None => return Directive::Unhandled(format!("@join {rest}")),
+    };
+    let (match_field, primary_field) = if lhs_src == name {
+        (lhs_field, rhs_field)
+    } else if rhs_src == name {
+        (rhs_field, lhs_field)
+    } else {
+        return Directive::Unhandled(format!("@join {rest}"));
+    };
+    Directive::Join {
+        source: name,
+        match_field,
+        primary_field,
+    }
+}
+
+fn parse_source_bracket_text(s: &str) -> Option<(String, String)> {
+    let (name, rest) = s.split_once('[')?;
+    let field = rest.strip_suffix(']')?;
+    let n = name.trim();
+    let f = field.trim();
+    if n.is_empty() || f.is_empty() {
+        return None;
+    }
+    Some((n.to_string(), f.to_string()))
 }
 
 fn parse_sort(rest: &str) -> Directive {

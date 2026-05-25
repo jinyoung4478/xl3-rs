@@ -304,6 +304,11 @@ fn fixture_125_hyperlink_function() {
 }
 
 #[test]
+fn fixture_080_join_no_match_dropped() {
+    run_fixture("080-join-no-match-dropped").expect("fixture 080 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

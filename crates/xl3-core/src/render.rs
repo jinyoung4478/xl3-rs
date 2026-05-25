@@ -100,7 +100,7 @@ fn render_sheet(
             }
             RowPlan::ExpandDown { cells, directives } => {
                 let block_rows = resolve_block_rows(directives, source, named_sources);
-                let effective = apply_directives(&block_rows, directives, lists_value)?;
+                let effective = apply_directives(&block_rows, directives, lists_value, named_sources)?;
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
                 for (idx, source_row) in effective.iter().enumerate() {
                     let mut ctx: EvalContext = source_row.clone();
@@ -114,7 +114,7 @@ fn render_sheet(
             }
             RowPlan::ExpandRight { cells, directives } => {
                 let block_rows = resolve_block_rows(directives, source, named_sources);
-                let effective = apply_directives(&block_rows, directives, lists_value)?;
+                let effective = apply_directives(&block_rows, directives, lists_value, named_sources)?;
                 rows.push(render_expand_right_row(
                     cells,
                     &effective,
@@ -169,6 +169,7 @@ fn apply_directives(
     rows: &[HashMap<String, Value>],
     directives: &[Directive],
     lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
 ) -> Result<Vec<HashMap<String, Value>>> {
     let mut current: Vec<HashMap<String, Value>> = rows.to_vec();
     for d in directives {
@@ -204,6 +205,50 @@ fn apply_directives(
             }
             Directive::Top(n) => {
                 current.truncate(*n);
+            }
+            Directive::Join {
+                source,
+                match_field,
+                primary_field,
+            } => {
+                let target_rows = match named_sources.get(source) {
+                    Some(Value::Rows(handle)) => Arc::clone(handle),
+                    _ => {
+                        anyhow::bail!(
+                            "@join source {source:?} is not declared in __sources__"
+                        );
+                    }
+                };
+                let mut joined = Vec::with_capacity(current.len());
+                for mut row in current.drain(..) {
+                    let primary_val = row
+                        .get(primary_field)
+                        .cloned()
+                        .unwrap_or(Value::Empty);
+                    let matched = target_rows.iter().find(|t| {
+                        t.get(match_field)
+                            .map(|v| {
+                                // Equality semantics mirror eval::compare
+                                // (numeric path first, then canonical).
+                                crate::eval::compare(v, &primary_val)
+                                    .map(|c| c == 0)
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                    });
+                    if let Some(m) = matched {
+                        // Promote the joined row into the per-row ctx via
+                        // the same key the named source occupies. The
+                        // ReservedRef path then resolves `Source[Field]`
+                        // against this Map instead of the full Rows.
+                        row.insert(
+                            source.clone(),
+                            Value::Map(Arc::new(m.clone())),
+                        );
+                        joined.push(row);
+                    }
+                }
+                current = joined;
             }
             Directive::Repeat(_) | Directive::Source(_) | Directive::Unhandled(_) => {
                 // Repeat: direction is absorbed by the planner.
