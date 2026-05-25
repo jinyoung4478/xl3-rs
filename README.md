@@ -6,15 +6,55 @@
 
 ## Status
 
-**Pre-1.0 / alpha.** Phase 0 (feasibility) passed; Phase 1 (the pure-Rust core) is in progress.
+**Pre-1.0 / alpha.** Phase 0 + Phase 1 complete; Phase 2 in progress (Tasks 2.1 + 2.4 done, 2.2 + 2.3 pending). See [`PLAN.md`](./PLAN.md) §5 for the milestone breakdown.
 
 | Gate (PLAN.md §1, §5) | Target | Measured | |
 |---|---|---|---|
 | 70 MB workbook roundtrip, Rust native | 3 – 8 s | **3.23 s** | ✓ |
 | WASM boundary cost (warm) | < 2× native | **1.78×** | ✓ |
-| WASM bundle size | < 2 MB | **1.3 MB** | ✓ |
+| WASM bundle size | < 2 MB | **1.6 MB raw / 0.70 MB gz** | ✓ |
+| Stage-1 conformance (xl3 corpus) | 100% cell-equal | **99/99** static + 4/41 error + 1/1 dynamic + 4/7 multi-file | ⏳ |
 
-See [`docs/native-baseline.md`](./docs/native-baseline.md) and [`docs/wasm-boundary.md`](./docs/wasm-boundary.md) for the full Phase 0 reports.
+Cross-impl bench (median of 3, M1 release):
+
+| Scenario | xl3-rs | xl3 (TS) | ratio |
+|---|---|---|---|
+| wide-flat (10k rows × 4 cols) | ~58 ms | ~220 ms | 3.8× faster |
+| multi-sheet (5k × 5 groups) | ~22 ms | ~70 ms | 3.2× faster |
+| multi-source-join (5k × 1k) | ~26 ms | ~70 ms | 2.7× faster |
+
+See [`crates/xl3-core/BENCH.md`](./crates/xl3-core/BENCH.md) for the methodology and [`docs/native-baseline.md`](./docs/native-baseline.md) / [`docs/wasm-boundary.md`](./docs/wasm-boundary.md) for the Phase 0 reports.
+
+## Using the wasm acceleration
+
+`xl3-wasm` exposes three JS-facing entry points that mirror xl3 (TS)'s public surface:
+
+```js
+import init, { convert, preview, readTemplateInputs } from 'xl3-wasm';
+
+await init(); // load + instantiate the .wasm module
+
+const outputs = convert(templateBytes, dataBytes, { month: '2026-05' });
+// → [{ filename: 'report.xlsx', data: Uint8Array, warnings: [{ message }] }]
+
+const shape = preview(templateBytes, dataBytes);
+// → { files: [...], sources: [...] }
+
+const inputs = readTemplateInputs(templateBytes);
+// → [{ name, kind, required, default, label, description, options }]
+```
+
+From xl3 (TS) you opt into the wasm engine through `ConvertOptions.engine`:
+
+```ts
+import { convert } from '@jinyoung4478/xl3';
+const outputs = await convert(templateBuffer, sourceBuffer, {
+  inputs: { month: '2026-05' },
+  engine: 'auto', // 'wasm' to require, 'js' to force the ExcelJS path
+});
+```
+
+`engine: 'auto'` (the default) tries `xl3-wasm` and silently falls back to ExcelJS if the package isn't installed or the call throws — so existing xl3 users opt in just by adding the optional `xl3-wasm` package.
 
 ## Why this exists
 
