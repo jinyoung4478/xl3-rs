@@ -19,7 +19,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
 use crate::directives::{parse_directive_cell, Direction, Directive};
-use crate::styles::{self, NumFmtKind, TemplateStyles};
+use crate::styles::{self, NumFmtKind};
 use crate::value::Value;
 
 #[derive(Debug, Default, Clone)]
