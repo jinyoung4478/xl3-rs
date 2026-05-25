@@ -558,12 +558,15 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
 }
 
 fn try_row_aggregate(name: &str, args: &[Ast], ctx: &EvalContext) -> Result<Option<Value>> {
+    if !is_row_aggregate_name(name) {
+        return Ok(None);
+    }
     let rows = ctx_rows(ctx);
     // COUNT() with no args returns the row count, if a block context exists.
     if name == "COUNT" && args.is_empty() {
         return Ok(rows.map(|r| Value::Number(r.len() as f64)));
     }
-    // SUM/AVERAGE/AVG/MIN/MAX with a single bracket arg → row aggregate.
+    // SUM/AVERAGE/AVG/MIN/MAX/COUNT with a single bracket arg → row aggregate.
     if args.len() == 1 {
         if let Ast::Bracket(field) = &args[0] {
             if let Some(rows) = rows {
@@ -572,6 +575,10 @@ fn try_row_aggregate(name: &str, args: &[Ast], ctx: &EvalContext) -> Result<Opti
         }
     }
     Ok(None)
+}
+
+fn is_row_aggregate_name(name: &str) -> bool {
+    matches!(name, "SUM" | "AVERAGE" | "AVG" | "MIN" | "MAX" | "COUNT")
 }
 
 fn ctx_rows<'a>(ctx: &'a EvalContext) -> Option<&'a RowsHandle> {

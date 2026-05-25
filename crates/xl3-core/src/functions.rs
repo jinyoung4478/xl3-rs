@@ -89,7 +89,10 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
             if args.len() != 1 {
                 bail!("ISBLANK expects 1 argument, got {}", args.len());
             }
-            Ok(Value::Bool(matches!(&args[0], Value::Empty)))
+            // xl3 fixture 130: ISBLANK is true for Empty and for
+            // whitespace-only strings. Same definition as the source
+            // reader's row-skip logic (ADR-0007).
+            Ok(Value::Bool(crate::source::is_blank_value(&args[0])))
         }
         "IFEMPTY" => {
             if args.len() != 2 {

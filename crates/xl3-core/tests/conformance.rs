@@ -262,6 +262,11 @@ fn fixture_052_empty_count_field_whitespace_zero_false() {
 }
 
 #[test]
+fn fixture_130_isblank_function() {
+    run_fixture("130-isblank-function").expect("fixture 130 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
