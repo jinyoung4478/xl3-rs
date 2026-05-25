@@ -839,6 +839,71 @@ fn bytes_api_round_trip_fixture_001() {
     assert!(!p.sources.is_empty());
 }
 
+/// Phase 2 Task 2.2 — per-cell style apply. A bold + centered
+/// template cell propagates through `style_indices` to the output
+/// xf table and the body cell carries the matching cellXf id.
+#[test]
+fn manifest_apply_per_cell_font_and_alignment() {
+    use std::collections::HashMap as HMap;
+    use xl3_core::{
+        render_from_bytes_to_files_full, AlignmentSpec, FontSpec, HorizontalAlign, StyleManifest,
+        StyleSpec,
+    };
+
+    let Some(dir) = fixture_dir("001-bracket-substitution") else {
+        eprintln!("[skip] manifest_apply_per_cell: corpus not found");
+        return;
+    };
+    let template = std::fs::read(dir.join("template.xlsx")).expect("read template");
+    let data = std::fs::read(dir.join("data.xlsx")).expect("read data");
+
+    let mut manifest = StyleManifest::default();
+    manifest.styles.push(StyleSpec {
+        font: Some(FontSpec {
+            bold: true,
+            ..Default::default()
+        }),
+        alignment: Some(AlignmentSpec {
+            horizontal: Some(HorizontalAlign::Center),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    // The fixture template's Report sheet has `{{ [Customer] }}` at
+    // row 2 col 1 (zero-based 1,0). Apply the style there.
+    let mut cells_for_sheet: HMap<(u32, u32), usize> = HMap::new();
+    cells_for_sheet.insert((1, 0), 0);
+    manifest.cells.insert("Report".to_string(), cells_for_sheet);
+
+    let files = render_from_bytes_to_files_full(
+        &template,
+        data,
+        &HMap::new(),
+        Some(manifest),
+    )
+    .expect("render with cell-style manifest");
+    assert!(!files.is_empty());
+
+    let cursor = std::io::Cursor::new(files[0].data.clone());
+    let mut zip = zip::ZipArchive::new(cursor).expect("open output zip");
+    let mut styles_xml = String::new();
+    {
+        let mut f = zip
+            .by_name("xl/styles.xml")
+            .expect("styles.xml must exist when manifest styles are applied");
+        use std::io::Read;
+        f.read_to_string(&mut styles_xml).unwrap();
+    }
+    assert!(
+        styles_xml.contains("<b/>") || styles_xml.contains("<b "),
+        "expected a <font><b/></font> entry in styles.xml, got:\n{styles_xml}"
+    );
+    assert!(
+        styles_xml.contains("horizontal=\"center\""),
+        "expected horizontal=\"center\" alignment in styles.xml, got:\n{styles_xml}"
+    );
+}
+
 /// Phase 2 Task 2.2 — render_from_bytes_to_files_full with a tiny
 /// hand-built manifest. The corpus doesn't carry manifest fixtures
 /// yet, so we sanity-check the apply path here: a merge range and a

@@ -190,10 +190,15 @@ pub enum CellSource {
     /// `format_code` is the raw numFmt string from the template (e.g.
     /// `"0.00"` or `"yyyy-mm-dd"`) — preserved so the output writer
     /// can emit the same display format on the rendered cell.
+    /// `style_idx` is the index into the host-supplied
+    /// `StyleManifest::styles` table, populated when the renderer
+    /// receives a manifest (Phase 2 Task 2.2). `None` when the host
+    /// didn't ship a manifest or the template cell wasn't styled.
     Template {
         text: String,
         num_fmt: NumFmtKind,
         format_code: Option<String>,
+        style_idx: Option<usize>,
     },
     /// `{{ @subtotal <FN>(<ColumnRef>) }}` — emitted at the end of
     /// each group when the enclosing block has a `@group` directive.
@@ -425,21 +430,33 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
     let styles = styles::parse_template_styles(path).unwrap_or_default();
     let wb: Xlsx<_> = open_workbook(path)
         .with_context(|| format!("open template workbook at {}", path.display()))?;
-    parse_template_inner(wb, styles)
+    parse_template_inner(wb, styles, None)
 }
 
 /// Variant that builds a `WorkbookPlan` from an in-memory template
 /// XLSX buffer (the WASM entry point's input shape).
 pub fn parse_template_bytes(bytes: &[u8]) -> Result<WorkbookPlan> {
+    parse_template_bytes_with_manifest(bytes, None)
+}
+
+/// Same as `parse_template_bytes`, but also accepts the host
+/// style manifest so the planner can stamp the matching style
+/// index onto each `CellSource::Template` up front (Phase 2 Task
+/// 2.2). `None` is identical to `parse_template_bytes`.
+pub fn parse_template_bytes_with_manifest(
+    bytes: &[u8],
+    manifest: Option<&crate::manifest::StyleManifest>,
+) -> Result<WorkbookPlan> {
     let styles = styles::parse_template_styles_bytes(bytes).unwrap_or_default();
     let cursor = std::io::Cursor::new(bytes.to_vec());
     let wb: Xlsx<_> = Xlsx::new(cursor).context("open template workbook from bytes")?;
-    parse_template_inner(wb, styles)
+    parse_template_inner(wb, styles, manifest)
 }
 
 fn parse_template_inner<R: std::io::Read + std::io::Seek>(
     mut wb: Xlsx<R>,
     styles: styles::TemplateStyles,
+    manifest: Option<&crate::manifest::StyleManifest>,
 ) -> Result<WorkbookPlan> {
     // First pass: collect named-source names so the row classifier can
     // recognise `<Source>[Column]` as a row-set reference (not a per-
@@ -535,6 +552,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
                     *col_last,
                     &styles,
                     &named_source_names,
+                    manifest,
                 )?;
                 sub_blocks_out.push(SubBlock {
                     col_first: *col_first,
@@ -559,6 +577,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
             cols.saturating_sub(1),
             &styles,
             &named_source_names,
+            manifest,
         )?;
         sheets.push(SheetPlan {
             name,
@@ -737,6 +756,7 @@ fn build_row_plans_for_range(
     col_last: usize,
     styles: &TemplateStyles,
     named_source_names: &[String],
+    manifest: Option<&crate::manifest::StyleManifest>,
 ) -> Result<Vec<RowPlan>> {
     let mut row_plans: Vec<RowPlan> = Vec::with_capacity(rows);
     let mut pending_direction = Direction::Down;
@@ -779,10 +799,16 @@ fn build_row_plans_for_range(
                             .as_deref()
                             .map(styles::classify_num_fmt)
                             .unwrap_or(NumFmtKind::General);
+                        let style_idx = manifest.and_then(|m| {
+                            m.cells
+                                .get(sheet_name)
+                                .and_then(|map| map.get(&(r as u32, c as u32)).copied())
+                        });
                         CellSource::Template {
                             text: s.clone(),
                             num_fmt,
                             format_code,
+                            style_idx,
                         }
                     }
                 }

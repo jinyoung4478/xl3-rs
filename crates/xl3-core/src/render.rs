@@ -107,7 +107,12 @@ pub fn render_from_bytes_to_files_full(
     host_inputs: &HashMap<String, Value>,
     manifest: Option<crate::manifest::StyleManifest>,
 ) -> Result<Vec<OutputFile>> {
-    let plan = crate::plan::parse_template_bytes(template_bytes).context("parse template")?;
+    // Hand the manifest to the planner so the per-cell style index
+    // is stamped onto each CellSource::Template up front — that's
+    // the only place we still see the template (row, col) before
+    // the planner collapses positions during expansion.
+    let plan = crate::plan::parse_template_bytes_with_manifest(template_bytes, manifest.as_ref())
+        .context("parse template")?;
     let source_reader =
         CalamineSourceReader::open_bytes(data_bytes).context("open source workbook")?;
     render_with_reader_and_manifest(plan, source_reader, host_inputs, manifest)
@@ -426,8 +431,13 @@ fn render_sheet(
     // ADR-0068/0069 multi-block sheet: render each sub-block as if it
     // were its own single-block sheet, then merge column-by-column.
     if !plan.sub_blocks.is_empty() {
-        let mut sub_outputs: Vec<(usize, usize, Vec<Vec<Value>>, Vec<Vec<Option<String>>>)> =
-            Vec::new();
+        let mut sub_outputs: Vec<(
+            usize,
+            usize,
+            Vec<Vec<Value>>,
+            Vec<Vec<Option<String>>>,
+            Vec<Vec<Option<usize>>>,
+        )> = Vec::new();
         for sub in &plan.sub_blocks {
             let sub_plan = SheetPlan {
                 name: plan.name.clone(),
@@ -448,11 +458,12 @@ fn render_sheet(
                 sub.col_last,
                 sub_rendered.rows,
                 sub_rendered.formats,
+                sub_rendered.style_indices,
             ));
         }
         let max_rows = sub_outputs
             .iter()
-            .map(|(_, _, r, _)| r.len())
+            .map(|(_, _, r, _, _)| r.len())
             .max()
             .unwrap_or(0);
         let n_cols = plan.n_cols.max(1);
@@ -462,7 +473,10 @@ fn render_sheet(
         let mut merged_formats: Vec<Vec<Option<String>>> = (0..max_rows)
             .map(|_| vec![None; n_cols])
             .collect();
-        for (col_first, _col_last, sub_rows, sub_formats) in sub_outputs {
+        let mut merged_style_indices: Vec<Vec<Option<usize>>> = (0..max_rows)
+            .map(|_| vec![None; n_cols])
+            .collect();
+        for (col_first, _col_last, sub_rows, sub_formats, sub_styles) in sub_outputs {
             for (r_idx, sub_row) in sub_rows.iter().enumerate() {
                 for (c_off, v) in sub_row.iter().enumerate() {
                     let c = col_first + c_off;
@@ -478,17 +492,27 @@ fn render_sheet(
                         }
                     }
                 }
+                if let Some(sub_sr) = sub_styles.get(r_idx) {
+                    for (c_off, s) in sub_sr.iter().enumerate() {
+                        let c = col_first + c_off;
+                        if c < n_cols {
+                            merged_style_indices[r_idx][c] = *s;
+                        }
+                    }
+                }
             }
         }
         return Ok(RenderedSheet {
             name: plan.name.clone(),
             rows: merged,
             formats: merged_formats,
+            style_indices: merged_style_indices,
         });
     }
 
     let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut formats: Vec<Vec<Option<String>>> = Vec::new();
+    let mut style_indices: Vec<Vec<Option<usize>>> = Vec::new();
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
@@ -500,6 +524,7 @@ fn render_sheet(
                     group_keys,
                 )?);
                 formats.push(row_formats(cells));
+                style_indices.push(row_style_indices(cells));
             }
             RowPlan::ExpandDown {
                 cells,
@@ -530,6 +555,7 @@ fn render_sheet(
                     |group_rows: &Vec<HashMap<String, Value>>,
                      rows: &mut Vec<Vec<Value>>,
                      formats: &mut Vec<Vec<Option<String>>>,
+                     style_indices: &mut Vec<Vec<Option<usize>>>,
                      global_idx: &mut usize|
                      -> Result<()> {
                         for (iter_idx, source_row) in group_rows.iter().enumerate() {
@@ -551,6 +577,7 @@ fn render_sheet(
                             );
                             rows.push(render_template_row(&effective_cells, &ctx)?);
                             formats.push(row_formats(&effective_cells));
+                            style_indices.push(row_style_indices(&effective_cells));
                         }
                         Ok(())
                     };
@@ -560,6 +587,7 @@ fn render_sheet(
                         &effective,
                         &mut rows,
                         &mut formats,
+                        &mut style_indices,
                         &mut global_idx,
                     )?;
                     let consumed = effective.len().saturating_sub(1);
@@ -573,6 +601,7 @@ fn render_sheet(
                                 group_keys,
                             )?);
                             formats.push(row_formats(extra));
+                            style_indices.push(row_style_indices(extra));
                         }
                     }
                     for subtotal_cells in subtotal_rows {
@@ -584,6 +613,7 @@ fn render_sheet(
                             named_sources,
                         )?);
                         formats.push(row_formats(subtotal_cells));
+                        style_indices.push(row_style_indices(subtotal_cells));
                     }
                 } else {
                     render_grouped(
@@ -596,6 +626,7 @@ fn render_sheet(
                         *col_range,
                         &mut rows,
                         &mut formats,
+                        &mut style_indices,
                         &mut global_idx,
                         &rows_handle,
                         inputs_value,
@@ -616,6 +647,8 @@ fn render_sheet(
                     named_sources,
                 )?);
                 formats.push(row_formats_for_expand_right(cells, effective.len()));
+                style_indices
+                    .push(row_style_indices_for_expand_right(cells, effective.len()));
             }
         }
     }
@@ -623,6 +656,7 @@ fn render_sheet(
         name: plan.name.clone(),
         rows,
         formats,
+        style_indices,
     })
 }
 
@@ -715,6 +749,7 @@ fn render_grouped(
     col_range: Option<(usize, usize)>,
     out_rows: &mut Vec<Vec<Value>>,
     out_formats: &mut Vec<Vec<Option<String>>>,
+    out_style_indices: &mut Vec<Vec<Option<usize>>>,
     global_idx: &mut usize,
     rows_handle: &Arc<Vec<HashMap<String, Value>>>,
     inputs_value: &Value,
@@ -738,6 +773,7 @@ fn render_grouped(
                 compose_iteration_cells(cells, side_rows, col_range, iter_idx);
             out_rows.push(render_template_row(&effective_cells, &ctx)?);
             out_formats.push(row_formats(&effective_cells));
+            out_style_indices.push(row_style_indices(&effective_cells));
         }
         return Ok(());
     }
@@ -753,6 +789,7 @@ fn render_grouped(
             col_range,
             out_rows,
             out_formats,
+            out_style_indices,
             global_idx,
             rows_handle,
             inputs_value,
@@ -771,6 +808,7 @@ fn render_grouped(
                 named_sources,
             )?);
             out_formats.push(row_formats(&subtotal_rows[slot]));
+            out_style_indices.push(row_style_indices(&subtotal_rows[slot]));
         }
     }
     Ok(())
@@ -1069,8 +1107,37 @@ fn cell_format(cell: &CellSource) -> Option<String> {
     }
 }
 
+fn cell_style_idx(cell: &CellSource) -> Option<usize> {
+    match cell {
+        CellSource::Template { style_idx, .. } => *style_idx,
+        _ => None,
+    }
+}
+
 fn row_formats(cells: &[CellSource]) -> Vec<Option<String>> {
     cells.iter().map(cell_format).collect()
+}
+
+fn row_style_indices(cells: &[CellSource]) -> Vec<Option<usize>> {
+    cells.iter().map(cell_style_idx).collect()
+}
+
+fn row_style_indices_for_expand_right(
+    cells: &[CellSource],
+    n_iters: usize,
+) -> Vec<Option<usize>> {
+    let mut out = Vec::with_capacity(cells.len() + n_iters);
+    for cell in cells {
+        match cell {
+            CellSource::Template { style_idx, .. } => {
+                for _ in 0..n_iters {
+                    out.push(*style_idx);
+                }
+            }
+            _ => out.push(cell_style_idx(cell)),
+        }
+    }
+    out
 }
 
 fn render_static_row(
