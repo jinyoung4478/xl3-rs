@@ -199,15 +199,39 @@ fn render_sheet(
     named_sources: &HashMap<String, Value>,
 ) -> Result<RenderedSheet> {
     let mut rows: Vec<Vec<Value>> = Vec::new();
+    // ADR-0066: a post-block Static row that mixes inside-col cells
+    // (these shift with expansion) and outside-col cells (these stay
+    // at template row positions) is split into two output rows.
+    let mut last_block_col_range: Option<(usize, usize)> = None;
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
+                if let Some(range) = last_block_col_range {
+                    let (outside_only, inside_only, has_outside, has_inside) =
+                        split_inside_outside(cells, range);
+                    if has_inside && has_outside {
+                        rows.push(render_static_row(
+                            &outside_only,
+                            inputs_value,
+                            lists_value,
+                            named_sources,
+                        )?);
+                        rows.push(render_static_row(
+                            &inside_only,
+                            inputs_value,
+                            lists_value,
+                            named_sources,
+                        )?);
+                        continue;
+                    }
+                }
                 rows.push(render_static_row(
                     cells,
                     inputs_value,
                     lists_value,
                     named_sources,
                 )?);
+                last_block_col_range = None;
             }
             RowPlan::ExpandDown {
                 cells,
@@ -216,6 +240,7 @@ fn render_sheet(
                 side_rows,
                 col_range,
             } => {
+                last_block_col_range = *col_range;
                 let block_rows = resolve_block_rows(directives, source, named_sources);
                 let effective =
                     apply_directives(&block_rows, directives, lists_value, named_sources)?;
@@ -310,6 +335,7 @@ fn render_sheet(
                     lists_value,
                     named_sources,
                 )?);
+                last_block_col_range = None;
             }
         }
     }
@@ -521,6 +547,33 @@ fn compose_iteration_cells(
             }
         })
         .collect()
+}
+
+/// Split a row's cells into outside-only and inside-only copies for
+/// ADR-0066's column-scoped splice. Empty cells stay empty in both
+/// halves. Returns `(outside, inside, has_outside_content, has_inside_content)`.
+fn split_inside_outside(
+    cells: &[CellSource],
+    range: (usize, usize),
+) -> (Vec<CellSource>, Vec<CellSource>, bool, bool) {
+    let (lo, hi) = range;
+    let mut outside = vec![CellSource::Empty; cells.len()];
+    let mut inside = vec![CellSource::Empty; cells.len()];
+    let mut has_outside = false;
+    let mut has_inside = false;
+    for (i, c) in cells.iter().enumerate() {
+        if matches!(c, CellSource::Empty) {
+            continue;
+        }
+        if i >= lo && i <= hi {
+            inside[i] = c.clone();
+            has_inside = true;
+        } else {
+            outside[i] = c.clone();
+            has_outside = true;
+        }
+    }
+    (outside, inside, has_outside, has_inside)
 }
 
 fn inject_named_sources(ctx: &mut EvalContext, named_sources: &HashMap<String, Value>) {

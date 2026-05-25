@@ -471,6 +471,15 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                 continue;
             }
 
+            // A completely empty template row (no cell of any kind)
+            // never contributes to the output — it's just spacing in
+            // the author's spreadsheet. Skipping it here keeps the
+            // post-block split logic in the renderer simple (the
+            // mixed footer row sits directly after the expansion).
+            if !any_cell {
+                continue;
+            }
+
             // A row whose template cells are all `@subtotal ...` (no
             // other `{{ ... }}` blocks) attaches to the most recent
             // ExpandDown block. xl3 always emits subtotal rows right

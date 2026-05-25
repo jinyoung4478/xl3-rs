@@ -57,6 +57,17 @@ fn run_fixture(fixture_name: &str) -> Result<()> {
     }
 
     let meta_yaml = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
+    // Stage 2 fixtures exercise OOXML canonicalisation (attribute order,
+    // quote style, zip entry order) — outside the cell-value
+    // comparison this runner does. Skip cleanly so a Stage 2 corpus
+    // entry doesn't masquerade as a stage-1 failure.
+    if meta_yaml
+        .lines()
+        .any(|l| l.trim().starts_with("comparison_stage:") && l.contains('2'))
+    {
+        eprintln!("[skip stage-2] {fixture_name}");
+        return Ok(());
+    }
     let host_inputs = parse_meta_inputs(&meta_yaml);
     let actual_bytes = render_from_paths_with_inputs(&template, &data, &host_inputs)
         .with_context(|| format!("render fixture {fixture_name}"))?;
@@ -539,6 +550,12 @@ fn fixture_087_date_canonical_string_concat() {
 }
 
 #[test]
+fn fixture_097_native_formula_static_cell_preserved() {
+    run_fixture("097-native-formula-static-cell-preserved")
+        .expect("fixture 097 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
@@ -584,7 +601,17 @@ fn fixture_corpus_overview() {
             skip_no_expected += 1;
             continue;
         }
-        match { let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default(); let inputs = parse_meta_inputs(&meta); xl3_core::render::render_from_paths_with_inputs(&template, &data, &inputs) } {
+        let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
+        // Stage 2 fixtures are out of scope for cell-value comparison.
+        if meta
+            .lines()
+            .any(|l| l.trim().starts_with("comparison_stage:") && l.contains('2'))
+        {
+            skip_no_expected += 1;
+            continue;
+        }
+        let inputs = parse_meta_inputs(&meta);
+        match xl3_core::render::render_from_paths_with_inputs(&template, &data, &inputs) {
             Ok(bytes) => match compare_workbooks_stage1(&bytes, &expected) {
                 Ok(()) => pass += 1,
                 Err(e) => {
@@ -639,7 +666,15 @@ fn fixture_failure_taxonomy() {
         if !template.exists() || !data.exists() || !expected.exists() {
             continue;
         }
-        match { let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default(); let inputs = parse_meta_inputs(&meta); xl3_core::render::render_from_paths_with_inputs(&template, &data, &inputs) } {
+        let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
+        if meta
+            .lines()
+            .any(|l| l.trim().starts_with("comparison_stage:") && l.contains('2'))
+        {
+            continue;
+        }
+        let inputs = parse_meta_inputs(&meta);
+        match xl3_core::render::render_from_paths_with_inputs(&template, &data, &inputs) {
             Ok(bytes) => match compare_workbooks_stage1(&bytes, &expected) {
                 Ok(()) => {}
                 Err(e) => {
