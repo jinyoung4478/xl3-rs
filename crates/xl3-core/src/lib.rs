@@ -15,6 +15,7 @@
 //! §5 Phase 1 for the broader roadmap.
 
 pub mod directives;
+pub mod errors;
 pub mod eval;
 pub mod functions;
 pub mod introspect;
@@ -29,6 +30,7 @@ pub mod value;
 pub use calamine;
 pub use rust_xlsxwriter;
 
+pub use errors::{is_xtl_error, XtlError};
 pub use introspect::{
     preview, read_template_inputs, InputKind, InputSpec, PreviewFile, PreviewResult,
     PreviewSheet, PreviewSource,
