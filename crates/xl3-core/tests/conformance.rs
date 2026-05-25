@@ -267,6 +267,12 @@ fn fixture_130_isblank_function() {
 }
 
 #[test]
+fn fixture_100_arithmetic_string_coerces_to_number() {
+    run_fixture("100-arithmetic-string-coerces-to-number")
+        .expect("fixture 100 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

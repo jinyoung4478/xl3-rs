@@ -731,10 +731,20 @@ pub(crate) fn coerce_number(v: &Value) -> Result<f64> {
         Value::Number(n) => Ok(*n),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         Value::Empty => Ok(0.0),
-        Value::String(s) => s
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| anyhow!("cannot coerce string {s:?} to number")),
+        Value::String(s) => {
+            // xl3 ADR allows numeric strings with thousands separators
+            // and optional surrounding whitespace, e.g. "1,234.5" → 1234.5.
+            // Strip ASCII commas before parsing. Empty or whitespace-only
+            // strings coerce to 0, matching the Empty-cell rule above.
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(0.0);
+            }
+            let stripped: String = trimmed.chars().filter(|c| *c != ',').collect();
+            stripped
+                .parse::<f64>()
+                .map_err(|_| anyhow!("cannot coerce string {s:?} to number"))
+        }
         Value::Rows(_) | Value::Map(_) | Value::List(_) => {
             bail!("cannot coerce a composite Value to a number")
         }
