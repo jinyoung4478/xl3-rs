@@ -18,6 +18,7 @@ pub mod directives;
 pub mod eval;
 pub mod functions;
 pub mod output;
+pub mod output_model;
 pub mod plan;
 pub mod render;
 pub mod source;
@@ -27,7 +28,8 @@ pub mod value;
 pub use calamine;
 pub use rust_xlsxwriter;
 
+pub use output_model::{OutputFile, XtlWarning};
 pub use plan::{CellSource, RowPlan, SheetPlan, WorkbookPlan};
-pub use render::render;
+pub use render::{render, render_to_files};
 pub use source::{CalamineSourceReader, SourceData, SourceReader};
 pub use value::Value;

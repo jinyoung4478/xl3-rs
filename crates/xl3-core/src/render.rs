@@ -16,6 +16,7 @@ use crate::eval::{
     compare, eval_cell, eval_expression_str, inject_rownum, inject_rows, is_truthy, EvalContext,
 };
 use crate::output::{write_workbook, RenderedSheet};
+use crate::output_model::{OutputFile, XtlWarning};
 use crate::plan::{
     inputs_to_value, lists_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
 };
@@ -24,19 +25,52 @@ use crate::styles::NumFmtKind;
 use crate::value::Value;
 
 /// Convenience for the conformance runner: parse the template, load the
-/// source workbook, render, return bytes.
+/// source workbook, render, return bytes of the first output file.
+///
+/// For the multi-file `OutputFile[]` surface — matching xl3 (TS) /
+/// xl3-py's `convert()` — use [`render_from_paths_to_files`] /
+/// [`render_to_files`] / [`render_to_files_with_sources`].
 pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
-    render_from_paths_with_inputs(template, data, &HashMap::new())
+    first_file_bytes(render_from_paths_to_files(template, data)?)
 }
 
 /// Variant that lets the host supply `__inputs__` overrides — used by
 /// the conformance runner when a fixture's `meta.yaml` declares
-/// runtime inputs (ADR-0010).
+/// runtime inputs (ADR-0010). Returns the first output file's bytes;
+/// see the `_to_files` variants for the multi-file surface.
 pub fn render_from_paths_with_inputs(
     template: &Path,
     data: &Path,
     host_inputs: &HashMap<String, Value>,
 ) -> Result<Vec<u8>> {
+    first_file_bytes(render_from_paths_to_files_with_inputs(
+        template,
+        data,
+        host_inputs,
+    )?)
+}
+
+fn first_file_bytes(files: Vec<OutputFile>) -> Result<Vec<u8>> {
+    files
+        .into_iter()
+        .next()
+        .map(|f| f.data)
+        .ok_or_else(|| anyhow::anyhow!("renderer produced no output files"))
+}
+
+/// Multi-file render entry point, matching the xl3 (TS) and xl3-py
+/// `convert()` surface. The current implementation always returns a
+/// single `OutputFile` — `output_file_pattern`-driven multi-file
+/// splitting will land alongside `xl3-wasm`'s real entry point.
+pub fn render_from_paths_to_files(template: &Path, data: &Path) -> Result<Vec<OutputFile>> {
+    render_from_paths_to_files_with_inputs(template, data, &HashMap::new())
+}
+
+pub fn render_from_paths_to_files_with_inputs(
+    template: &Path,
+    data: &Path,
+    host_inputs: &HashMap<String, Value>,
+) -> Result<Vec<OutputFile>> {
     let mut plan = parse_template(template).context("parse template")?;
     for (key, value) in host_inputs {
         plan.inputs.insert(key.clone(), value.clone());
@@ -60,12 +94,12 @@ pub fn render_from_paths_with_inputs(
         let data = source_reader.read(&decl.sheet, &decl.table)?;
         named_sources.insert(name.clone(), data);
     }
-    render_with_sources(&plan, &source, &named_sources)
+    render_to_files_with_sources(&plan, &source, &named_sources)
 }
 
 
 pub fn render(plan: &WorkbookPlan, source: &SourceData) -> Result<Vec<u8>> {
-    render_with_sources(plan, source, &HashMap::new())
+    first_file_bytes(render_to_files(plan, source)?)
 }
 
 pub fn render_with_sources(
@@ -73,6 +107,18 @@ pub fn render_with_sources(
     source: &SourceData,
     named_sources: &HashMap<String, SourceData>,
 ) -> Result<Vec<u8>> {
+    first_file_bytes(render_to_files_with_sources(plan, source, named_sources)?)
+}
+
+pub fn render_to_files(plan: &WorkbookPlan, source: &SourceData) -> Result<Vec<OutputFile>> {
+    render_to_files_with_sources(plan, source, &HashMap::new())
+}
+
+pub fn render_to_files_with_sources(
+    plan: &WorkbookPlan,
+    source: &SourceData,
+    named_sources: &HashMap<String, SourceData>,
+) -> Result<Vec<OutputFile>> {
     // Pre-bundle the reserved-namespace values that don't change
     // between expansion rows. The renderer slots them into every ctx
     // it builds.
@@ -121,7 +167,19 @@ pub fn render_with_sources(
             )?);
         }
     }
-    write_workbook(&out_sheets)
+    let bytes = write_workbook(&out_sheets)?;
+    let filename = plan
+        .config
+        .output_file_pattern()
+        .map(str::to_string)
+        .unwrap_or_else(|| "output.xlsx".to_string());
+    // ADR-0016 multi-file split (output_file_pattern with `{{ }}`)
+    // lands alongside xl3-wasm's real entry point. For now: single file.
+    Ok(vec![OutputFile {
+        filename,
+        data: bytes,
+        warnings: Vec::<XtlWarning>::new(),
+    }])
 }
 
 /// xlsx limits sheet names to 31 characters and disallows `:\/?*[]`.
