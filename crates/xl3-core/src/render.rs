@@ -25,7 +25,21 @@ use crate::value::Value;
 /// Convenience for the conformance runner: parse the template, load the
 /// source workbook, render, return bytes.
 pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
-    let plan = parse_template(template).context("parse template")?;
+    render_from_paths_with_inputs(template, data, &HashMap::new())
+}
+
+/// Variant that lets the host supply `__inputs__` overrides — used by
+/// the conformance runner when a fixture's `meta.yaml` declares
+/// runtime inputs (ADR-0010).
+pub fn render_from_paths_with_inputs(
+    template: &Path,
+    data: &Path,
+    host_inputs: &HashMap<String, Value>,
+) -> Result<Vec<u8>> {
+    let mut plan = parse_template(template).context("parse template")?;
+    for (key, value) in host_inputs {
+        plan.inputs.insert(key.clone(), value.clone());
+    }
     let mut source_reader = CalamineSourceReader::open(data).context("open source workbook")?;
     let source_sheet = match plan.config.source_sheet() {
         Some(pattern) => source_reader.resolve_sheet_name(pattern).ok_or_else(|| {
@@ -47,6 +61,7 @@ pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
     }
     render_with_sources(&plan, &source, &named_sources)
 }
+
 
 pub fn render(plan: &WorkbookPlan, source: &SourceData) -> Result<Vec<u8>> {
     render_with_sources(plan, source, &HashMap::new())

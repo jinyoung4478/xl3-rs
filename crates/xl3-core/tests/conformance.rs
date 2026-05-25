@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 use xl3_core::calamine::{open_workbook, Data, Reader, Xlsx};
-use xl3_core::{render::render_from_paths, value::Value};
+use xl3_core::{
+    render::{render_from_paths_with_inputs},
+    value::Value,
+};
 
 fn conformance_root() -> Option<PathBuf> {
     // Resolves to the sibling xl3 repo. Falls back to None when running
@@ -53,7 +56,9 @@ fn run_fixture(fixture_name: &str) -> Result<()> {
         ));
     }
 
-    let actual_bytes = render_from_paths(&template, &data)
+    let meta_yaml = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default();
+    let host_inputs = parse_meta_inputs(&meta_yaml);
+    let actual_bytes = render_from_paths_with_inputs(&template, &data, &host_inputs)
         .with_context(|| format!("render fixture {fixture_name}"))?;
 
     compare_workbooks_stage1(&actual_bytes, &expected)
@@ -154,6 +159,54 @@ fn read_all_cells<R: std::io::Read + std::io::Seek>(
         out.insert(name, sheet_rows);
     }
     Ok(out)
+}
+
+/// Tiny YAML reader that lifts a fixture's `inputs:` block into a
+/// `name → Value::String` map. The corpus uses a single uniform shape:
+///
+///   inputs:
+///     - name: region
+///       value: Seoul
+///
+/// We don't need general YAML support — recognise indented `- name:` /
+/// `name:` and `value:` lines under a top-level `inputs:` key.
+fn parse_meta_inputs(yaml: &str) -> HashMap<String, Value> {
+    let mut out: HashMap<String, Value> = HashMap::new();
+    let mut in_inputs = false;
+    let mut current_name: Option<String> = None;
+    for line in yaml.lines() {
+        let raw = line;
+        let trimmed = raw.trim_start();
+        let indent = raw.len() - trimmed.len();
+        if indent == 0 && !trimmed.is_empty() {
+            // top-level key resets the inputs block
+            in_inputs = trimmed.starts_with("inputs:");
+            current_name = None;
+            continue;
+        }
+        if !in_inputs {
+            continue;
+        }
+        let body = trimmed.trim_start_matches('-').trim_start();
+        if let Some(rest) = body.strip_prefix("name:") {
+            current_name = Some(strip_yaml_scalar(rest));
+        } else if let Some(rest) = body.strip_prefix("value:") {
+            if let Some(name) = &current_name {
+                out.insert(name.clone(), Value::String(strip_yaml_scalar(rest)));
+            }
+        }
+    }
+    out
+}
+
+fn strip_yaml_scalar(s: &str) -> String {
+    let t = s.trim();
+    let stripped = t
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .or_else(|| t.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')))
+        .unwrap_or(t);
+    stripped.to_string()
 }
 
 fn value_eq(a: &Value, b: &Value) -> bool {
@@ -369,6 +422,12 @@ fn fixture_133_group_two_level_nested_subtotal() {
 fn fixture_134_group_grand_total_via_outermost_subtotal() {
     run_fixture("134-group-grand-total-via-outermost-subtotal")
         .expect("fixture 134 should pass");
+}
+
+#[test]
+fn fixture_068_input_select_host_supplied() {
+    run_fixture("068-input-select-host-supplied")
+        .expect("fixture 068 should pass");
 }
 
 #[test]
