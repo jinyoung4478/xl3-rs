@@ -177,3 +177,159 @@ fn value_eq(a: &Value, b: &Value) -> bool {
 fn fixture_001_bracket_substitution() {
     run_fixture("001-bracket-substitution").expect("fixture 001 should pass");
 }
+
+#[test]
+fn fixture_002_if_function() {
+    run_fixture("002-if-function").expect("fixture 002 should pass");
+}
+
+#[test]
+fn fixture_005_round_half_away_from_zero() {
+    run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
+}
+
+/// Walk every fixture, classify pass / fail / skip, and print a summary.
+/// Always passes — purely informational. The targeted `fixture_NNN_*`
+/// tests above are the ones that gate the build; this one is what we use
+/// to spot the next set of fixtures to wire in.
+///
+/// Run with `cargo test -p xl3-core --tests fixture_corpus_overview -- --nocapture`
+/// to see the breakdown.
+#[test]
+fn fixture_corpus_overview() {
+    let Some(root) = conformance_root() else {
+        eprintln!("[skip] xl3 conformance corpus not found");
+        return;
+    };
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .expect("read fixtures dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+
+    let mut pass = 0usize;
+    let mut fail = 0usize;
+    let mut skip_no_expected = 0usize;
+    let mut fail_examples: Vec<(String, String)> = Vec::new();
+
+    for name in &names {
+        let dir = root.join(name);
+        let template = dir.join("template.xlsx");
+        let data = dir.join("data.xlsx");
+        let expected = dir.join("expected.xlsx");
+
+        if !template.exists() || !data.exists() {
+            skip_no_expected += 1;
+            continue;
+        }
+        if !expected.exists() {
+            // Error / dynamic / multi-output fixtures: skip for now.
+            skip_no_expected += 1;
+            continue;
+        }
+        match xl3_core::render::render_from_paths(&template, &data) {
+            Ok(bytes) => match compare_workbooks_stage1(&bytes, &expected) {
+                Ok(()) => pass += 1,
+                Err(e) => {
+                    fail += 1;
+                    if fail_examples.len() < 5 {
+                        fail_examples.push((name.clone(), format!("{e}")));
+                    }
+                }
+            },
+            Err(e) => {
+                fail += 1;
+                if fail_examples.len() < 5 {
+                    fail_examples.push((name.clone(), format!("render: {e}")));
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "conformance corpus: {} fixtures, pass={pass} fail={fail} skip(no expected)={skip_no_expected}",
+        names.len()
+    );
+    if !fail_examples.is_empty() {
+        eprintln!("first failures:");
+        for (n, e) in &fail_examples {
+            let trimmed: String = e.chars().take(180).collect();
+            eprintln!("  - {n}: {trimmed}");
+        }
+    }
+}
+
+#[test]
+fn fixture_failure_taxonomy() {
+    let Some(root) = conformance_root() else {
+        eprintln!("[skip] xl3 conformance corpus not found");
+        return;
+    };
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .expect("read fixtures dir")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+
+    let mut buckets: std::collections::BTreeMap<&'static str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for name in &names {
+        let dir = root.join(name);
+        let template = dir.join("template.xlsx");
+        let data = dir.join("data.xlsx");
+        let expected = dir.join("expected.xlsx");
+        if !template.exists() || !data.exists() || !expected.exists() {
+            continue;
+        }
+        match xl3_core::render::render_from_paths(&template, &data) {
+            Ok(bytes) => match compare_workbooks_stage1(&bytes, &expected) {
+                Ok(()) => {}
+                Err(e) => {
+                    let msg = format!("{e}");
+                    let bucket = if msg.contains("row count mismatch") {
+                        "row-count-mismatch"
+                    } else if msg.contains("sheet count mismatch") {
+                        "sheet-count-mismatch"
+                    } else if msg.contains("col count mismatch") {
+                        "col-count-mismatch"
+                    } else if msg.contains("cell") && msg.contains("mismatch") {
+                        "cell-value-mismatch"
+                    } else {
+                        "compare-other"
+                    };
+                    buckets.entry(bucket).or_default().push(name.clone());
+                }
+            },
+            Err(e) => {
+                let msg = format!("{e}");
+                let bucket = if msg.contains("'@'") || msg.contains("@filter") || msg.contains("@repeat") {
+                    "directive-at"
+                } else if msg.contains("unknown function") {
+                    "unknown-function"
+                } else if msg.contains("Source[") || msg.contains("source") {
+                    "source-or-cross-source"
+                } else if msg.contains("unexpected character") {
+                    "lex-other"
+                } else if msg.contains("unsupported expression") {
+                    "unsupported-expression"
+                } else if msg.contains("xl3/") {
+                    "xtl-error-propagated"
+                } else {
+                    "render-other"
+                };
+                buckets.entry(bucket).or_default().push(name.clone());
+            }
+        }
+    }
+
+    eprintln!("\nfailure taxonomy (top 5 in each bucket):");
+    for (bucket, fixtures) in &buckets {
+        eprintln!("  {} ({}):", bucket, fixtures.len());
+        for n in fixtures.iter().take(5) {
+            eprintln!("    {n}");
+        }
+    }
+}
