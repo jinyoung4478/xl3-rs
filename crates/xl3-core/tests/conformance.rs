@@ -309,6 +309,16 @@ fn fixture_080_join_no_match_dropped() {
 }
 
 #[test]
+fn fixture_035_source_table_rich_text_header() {
+    run_fixture("035-source-table-rich-text-header").expect("fixture 035 should pass");
+}
+
+#[test]
+fn fixture_036_source_table_formula_header() {
+    run_fixture("036-source-table-formula-header").expect("fixture 036 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
