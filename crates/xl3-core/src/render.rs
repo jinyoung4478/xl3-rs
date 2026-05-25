@@ -99,7 +99,8 @@ fn render_sheet(
                 )?);
             }
             RowPlan::ExpandDown { cells, directives } => {
-                let effective = apply_directives(&source.rows, directives, lists_value)?;
+                let block_rows = resolve_block_rows(directives, source, named_sources);
+                let effective = apply_directives(&block_rows, directives, lists_value)?;
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
                 for (idx, source_row) in effective.iter().enumerate() {
                     let mut ctx: EvalContext = source_row.clone();
@@ -112,7 +113,8 @@ fn render_sheet(
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
-                let effective = apply_directives(&source.rows, directives, lists_value)?;
+                let block_rows = resolve_block_rows(directives, source, named_sources);
+                let effective = apply_directives(&block_rows, directives, lists_value)?;
                 rows.push(render_expand_right_row(
                     cells,
                     &effective,
@@ -127,6 +129,29 @@ fn render_sheet(
         name: plan.name.clone(),
         rows,
     })
+}
+
+/// Resolve which row set the expansion block iterates over. With no
+/// `@source` directive (the common case) it's the default source's
+/// rows. With `@source Name`, look up the named source — error
+/// permissively to an empty row set if the name isn't declared, so
+/// later directives still apply consistently.
+fn resolve_block_rows(
+    directives: &[Directive],
+    default_source: &SourceData,
+    named_sources: &HashMap<String, Value>,
+) -> Vec<HashMap<String, Value>> {
+    if let Some(name) = directives.iter().find_map(|d| match d {
+        Directive::Source(n) => Some(n.as_str()),
+        _ => None,
+    }) {
+        match named_sources.get(name) {
+            Some(Value::Rows(handle)) => handle.as_ref().clone(),
+            _ => Vec::new(),
+        }
+    } else {
+        default_source.rows.clone()
+    }
 }
 
 fn inject_named_sources(ctx: &mut EvalContext, named_sources: &HashMap<String, Value>) {
@@ -180,9 +205,10 @@ fn apply_directives(
             Directive::Top(n) => {
                 current.truncate(*n);
             }
-            Directive::Repeat(_) | Directive::Unhandled(_) => {
-                // direction is already absorbed by the planner;
-                // Unhandled is intentionally inert at this milestone.
+            Directive::Repeat(_) | Directive::Source(_) | Directive::Unhandled(_) => {
+                // Repeat: direction is absorbed by the planner.
+                // Source: applied earlier by `resolve_block_rows`.
+                // Unhandled: inert at this milestone.
             }
         }
     }

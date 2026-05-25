@@ -26,6 +26,10 @@ pub enum Directive {
     Sort { field: String, ascending: bool },
     /// `@top N` — keep first N rows after sort/filter.
     Top(usize),
+    /// `@source <Name>` — the following expansion block iterates over
+    /// the named external source (declared on `__sources__`) instead
+    /// of the default source.
+    Source(String),
     /// Captured but not yet acted on. Lets the planner classify rows as
     /// "directive only" without exploding when richer fixtures hit.
     Unhandled(String),
@@ -87,6 +91,14 @@ fn parse_one(inner: &str) -> Option<Directive> {
             Ok(n) => Directive::Top(n),
             Err(_) => Directive::Unhandled(format!("@top {rest}")),
         },
+        "source" => {
+            let name = rest.trim();
+            if name.is_empty() {
+                Directive::Unhandled("@source (empty)".into())
+            } else {
+                Directive::Source(name.to_string())
+            }
+        }
         _ => Directive::Unhandled(format!("@{name} {rest}").trim().to_string()),
     })
 }

@@ -284,6 +284,11 @@ fn fixture_070_source_aggregate_cross_source() {
 }
 
 #[test]
+fn fixture_071_source_directive_active() {
+    run_fixture("071-source-directive-active").expect("fixture 071 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
