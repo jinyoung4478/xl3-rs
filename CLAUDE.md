@@ -33,21 +33,24 @@
 
 ## 현재 상태
 
-**Phase**: Phase 2 진행 중 (Task 2.1 + 2.4 완료 / Task 2.2 + 2.3 미진행)
+**Phase**: Phase 2 + Phase 3 코어 인프라 완료. 잔여는 외부 검증.
 
 완료:
 - **Phase 0** — Feasibility 검증 (native 3.23s / WASM warm 1.78× / 번들 1.3MB)
 - **Phase 1** — xl3-core stage-1 conformance 99/99 (P1-A ~ P1-V)
-- **Phase 2 Task 2.1** — xl3-wasm `convert` / `readTemplateInputs` / `preview` 진입점 + bytes API (1.6MB raw / 0.70MB gz)
-- **Phase 2 Task 2.4** — xl3 (TS) 에 `engine: 'auto' | 'wasm' | 'js'` 옵션, optional wasm import + 자동 폴백 (xl3 TS 207/207 tests)
+- **Phase 2 Task 2.1** — xl3-wasm `convert` / `readTemplateInputs` / `preview` 진입점 + bytes API (1.7MB raw / 0.71MB gz)
+- **Phase 2 Task 2.2** — 매니페스트 추출 (TS, exceljs → JSON) + 적용 (Rust, font/alignment/fill/numFmt + merge ranges + column widths)
+- **Phase 2 Task 2.3** — Web Worker 격리 (demo 로 충족)
+- **Phase 2 Task 2.4** — xl3 (TS) 에 `engine: 'auto' | 'wasm' | 'js'` 옵션, optional wasm import + 자동 폴백 (xl3 TS 212/212 tests)
+- **Phase 3 Task 3.1** — 브라우저 데모 (examples/demo, Web Worker + 3 시나리오)
+- **Phase 3 Task 3.2** — conformance 가속 경로 인프라 (xl3 conformance-runner `--engine=wasm` flag)
+- **Phase 3 Task 3.3** — 번들 최적화 (wasm-opt -Oz pin, 0.71 MB gz, KPI <2 MB 통과)
 - **부가** P2-A~H — multi-file API, preview/inputs, XtlError, runner 확장, cross-impl bench, numFmt 출력, hash @join (528ms→28ms), file-group splitting
 
-남은 작업:
-- **Phase 2 Task 2.2** — TS 측 매니페스트 추출 (스타일 보존 위해 — 외부 레포 xl3)
-- **Phase 2 Task 2.3** — Web Worker 통합 (외부 레포 xl3)
-- **Phase 3 Task 3.1** — 데모 페이지
-- **Phase 3 Task 3.2** — Conformance 가속 경로 검증 (xl3 conformance fixture 를 engine='wasm' 으로 통과 확인)
-- **Phase 3 Task 3.3** — 추가 번들 최적화 (현재 0.70MB gz, KPI 통과)
+남은 검증:
+- 실제 `--engine=wasm` conformance 통과 측정 (xl3-wasm 패키지 install 후 — `npm install ../xl3-rs/crates/xl3-wasm/pkg` 또는 publish)
+- 매니페스트 apply 의 fixture-기반 검증 (현재는 hand-built manifest unit test 만)
+- 추가 스타일 (border, conditional formatting 일부) — incremental
 
 상세는 PLAN.md §5.
 
