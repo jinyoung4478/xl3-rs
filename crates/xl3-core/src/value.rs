@@ -6,7 +6,16 @@
 //! variant — that matches what the XTL spec calls "expression error" and
 //! avoids the JS-side `__xl3_error__` marker object until later milestones.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::calamine::Data as CalamineData;
+
+/// A bag of source rows reachable from the evaluator. Lives in
+/// `EvalContext` under the reserved `__rows__` key so row-aggregate
+/// builtins (`SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`) can walk every
+/// row in the active block without each row needing to know about it.
+pub type RowsHandle = Arc<Vec<HashMap<String, Value>>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -14,6 +23,9 @@ pub enum Value {
     String(String),
     Number(f64),
     Bool(bool),
+    /// All source rows visible to the active expansion block. Used for
+    /// row aggregates. Not emitted as a cell value.
+    Rows(RowsHandle),
 }
 
 impl Value {
@@ -33,6 +45,11 @@ impl Value {
                 }
             }
             Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+            // `Rows` is internal scaffolding — it should not normally
+            // surface to a cell. If it does, render as empty rather
+            // than panicking; the caller will see the empty result and
+            // can correct the template.
+            Value::Rows(_) => String::new(),
         }
     }
 

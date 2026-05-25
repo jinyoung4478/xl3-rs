@@ -9,9 +9,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::directives::Directive;
-use crate::eval::{compare, eval_cell, eval_expression_str, is_truthy, EvalContext};
+use crate::eval::{compare, eval_cell, eval_expression_str, inject_rows, is_truthy, EvalContext};
 use crate::output::{write_workbook, RenderedSheet};
 use crate::plan::{parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan};
 use crate::source::{CalamineSourceReader, SourceData, SourceReader};
@@ -49,8 +50,11 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
             }
             RowPlan::ExpandDown { cells, directives } => {
                 let effective = apply_directives(&source.rows, directives)?;
+                let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
                 for source_row in &effective {
-                    rows.push(render_template_row(cells, source_row)?);
+                    let mut ctx: EvalContext = source_row.clone();
+                    inject_rows(&mut ctx, Arc::clone(&rows_handle));
+                    rows.push(render_template_row(cells, &ctx)?);
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
@@ -114,6 +118,7 @@ fn render_expand_right_row(
 ) -> Result<Vec<Value>> {
     let mut out = Vec::with_capacity(cells.len() + rows.len());
     let mut emitted_expansion = false;
+    let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(rows.to_vec());
     for cell in cells {
         match cell {
             CellSource::Empty => out.push(Value::Empty),
@@ -126,7 +131,9 @@ fn render_expand_right_row(
                 }
                 emitted_expansion = true;
                 for source_row in rows {
-                    out.push(eval_cell(t, source_row)?);
+                    let mut ctx: EvalContext = source_row.clone();
+                    inject_rows(&mut ctx, Arc::clone(&rows_handle));
+                    out.push(eval_cell(t, &ctx)?);
                 }
             }
         }

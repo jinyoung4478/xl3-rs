@@ -21,7 +21,9 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::value::Value;
+use crate::value::{RowsHandle, Value};
+
+const ROWS_KEY: &str = "__rows__";
 
 pub type EvalContext = HashMap<String, Value>;
 
@@ -473,6 +475,14 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
             Ok(Value::Bool(!is_truthy(&v)))
         }
         Ast::Call(name, args) => {
+            // Row-aggregate dispatch (xl3 ADR-0027 / 0044): SUM/AVG/MIN/MAX
+            // applied to a column ref means "aggregate over the active
+            // block's source rows", and COUNT() with no arg means row
+            // count. Anything else falls through to the scalar builtins.
+            let upper = name.to_ascii_uppercase();
+            if let Some(result) = try_row_aggregate(&upper, args, ctx)? {
+                return Ok(result);
+            }
             let mut values = Vec::with_capacity(args.len());
             for a in args {
                 values.push(eval_ast(a, ctx)?);
@@ -485,6 +495,117 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
             eval_binop(*op, &lv, &rv)
         }
     }
+}
+
+fn try_row_aggregate(name: &str, args: &[Ast], ctx: &EvalContext) -> Result<Option<Value>> {
+    let rows = ctx_rows(ctx);
+    // COUNT() with no args returns the row count, if a block context exists.
+    if name == "COUNT" && args.is_empty() {
+        return Ok(rows.map(|r| Value::Number(r.len() as f64)));
+    }
+    // SUM/AVERAGE/AVG/MIN/MAX with a single bracket arg → row aggregate.
+    if args.len() == 1 {
+        if let Ast::Bracket(field) = &args[0] {
+            if let Some(rows) = rows {
+                return Ok(Some(aggregate_over_field(name, rows, field)?));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn ctx_rows<'a>(ctx: &'a EvalContext) -> Option<&'a RowsHandle> {
+    match ctx.get(ROWS_KEY) {
+        Some(Value::Rows(h)) => Some(h),
+        _ => None,
+    }
+}
+
+fn aggregate_over_field(
+    name: &str,
+    rows: &RowsHandle,
+    field: &str,
+) -> Result<Value> {
+    match name {
+        "SUM" => {
+            let mut acc = 0f64;
+            for r in rows.iter() {
+                if let Some(v) = r.get(field) {
+                    if let Ok(n) = coerce_number(v) {
+                        acc += n;
+                    }
+                }
+            }
+            Ok(Value::Number(acc))
+        }
+        "AVERAGE" | "AVG" => {
+            let mut acc = 0f64;
+            let mut n = 0usize;
+            for r in rows.iter() {
+                if let Some(v) = r.get(field) {
+                    if !matches!(v, Value::Empty) {
+                        if let Ok(num) = coerce_number(v) {
+                            acc += num;
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            Ok(if n == 0 {
+                Value::Empty
+            } else {
+                Value::Number(acc / n as f64)
+            })
+        }
+        "MIN" => {
+            let mut best = f64::INFINITY;
+            let mut seen = false;
+            for r in rows.iter() {
+                if let Some(v) = r.get(field) {
+                    if let Ok(n) = coerce_number(v) {
+                        if n < best {
+                            best = n;
+                        }
+                        seen = true;
+                    }
+                }
+            }
+            Ok(if seen { Value::Number(best) } else { Value::Empty })
+        }
+        "MAX" => {
+            let mut best = f64::NEG_INFINITY;
+            let mut seen = false;
+            for r in rows.iter() {
+                if let Some(v) = r.get(field) {
+                    if let Ok(n) = coerce_number(v) {
+                        if n > best {
+                            best = n;
+                        }
+                        seen = true;
+                    }
+                }
+            }
+            Ok(if seen { Value::Number(best) } else { Value::Empty })
+        }
+        "COUNT" => {
+            let mut n = 0usize;
+            for r in rows.iter() {
+                if let Some(v) = r.get(field) {
+                    if !matches!(v, Value::Empty) {
+                        n += 1;
+                    }
+                }
+            }
+            Ok(Value::Number(n as f64))
+        }
+        _ => bail!("not a row aggregate: {name}"),
+    }
+}
+
+/// Public helper used by `render` to inject the active block's rows
+/// into an evaluation context.
+pub fn inject_rows(ctx: &mut EvalContext, rows: RowsHandle) {
+    ctx.insert(ROWS_KEY.to_string(), Value::Rows(rows));
 }
 
 fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {
@@ -521,6 +642,7 @@ fn coerce_number(v: &Value) -> Result<f64> {
             .trim()
             .parse::<f64>()
             .map_err(|_| anyhow!("cannot coerce string {s:?} to number")),
+        Value::Rows(_) => bail!("cannot coerce a Rows handle to a number"),
     }
 }
 
@@ -530,6 +652,7 @@ pub fn is_truthy(v: &Value) -> bool {
         Value::Empty => false,
         Value::Number(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
+        Value::Rows(h) => !h.is_empty(),
     }
 }
 
@@ -577,7 +700,7 @@ fn is_empty_for_ifempty(v: &Value) -> bool {
         // empty for IFEMPTY. Numbers and booleans (including 0 / false)
         // are explicitly NOT empty.
         Value::String(s) => s.chars().all(|c| c.is_ascii_whitespace()),
-        Value::Number(_) | Value::Bool(_) => false,
+        Value::Number(_) | Value::Bool(_) | Value::Rows(_) => false,
     }
 }
 

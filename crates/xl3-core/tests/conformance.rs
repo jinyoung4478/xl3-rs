@@ -194,6 +194,11 @@ fn fixture_044_sort_and_top_order() {
 }
 
 #[test]
+fn fixture_047_aggregate_functions() {
+    run_fixture("047-aggregate-functions").expect("fixture 047 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
