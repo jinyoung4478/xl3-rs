@@ -175,6 +175,18 @@ pub struct WorkbookPlan {
     /// list — header is the list name, cells below are the values.
     /// Used by `@filter [Field] in __lists__[Name]`.
     pub lists: HashMap<String, Vec<Value>>,
+    /// Named external data sources declared on `__sources__` (xl3
+    /// ADR-0012). Each entry says where the source lives in the data
+    /// workbook and how to interpret its layout.
+    pub named_sources: HashMap<String, SourceDecl>,
+}
+
+/// One row from the `__sources__` sheet — names a secondary source
+/// reachable via `SourceName[Column]` expressions.
+#[derive(Debug, Clone)]
+pub struct SourceDecl {
+    pub sheet: String,
+    pub table: SourceTable,
 }
 
 const RESERVED_SHEETS: &[&str] = &["__config__", "__inputs__", "__lists__", "__sources__"];
@@ -400,11 +412,67 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
         }
     }
 
+    // Parse `__sources__` if present. xl3's column convention is
+    // `name | sheet | table | description | …`. We only need name →
+    // (sheet, table). Other columns (description, etc.) are ignored
+    // for now.
+    let mut named_sources: HashMap<String, SourceDecl> = HashMap::new();
+    if sheet_names_set(&wb).contains("__sources__") {
+        if let Ok(range) = wb.worksheet_range("__sources__") {
+            let (rows, cols) = range.get_size();
+            if rows >= 2 && cols >= 1 {
+                let mut headers: Vec<String> = Vec::with_capacity(cols);
+                for c in 0..cols {
+                    headers.push(match range.get((0, c)) {
+                        Some(CData::String(s)) => s.clone(),
+                        _ => String::new(),
+                    });
+                }
+                let name_col = 0usize;
+                let sheet_col = headers
+                    .iter()
+                    .position(|h| h.eq_ignore_ascii_case("sheet"));
+                let table_col = headers
+                    .iter()
+                    .position(|h| h.eq_ignore_ascii_case("table"));
+                for r in 1..rows {
+                    let name = match range.get((r, name_col)) {
+                        Some(CData::String(s)) if !s.is_empty() => s.clone(),
+                        _ => continue,
+                    };
+                    let sheet = sheet_col
+                        .and_then(|c| range.get((r, c)))
+                        .and_then(|d| match d {
+                            CData::String(s) if !s.is_empty() => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| name.clone());
+                    let table_raw = table_col
+                        .and_then(|c| range.get((r, c)))
+                        .map(|d| match d {
+                            CData::String(s) => s.clone(),
+                            CData::Float(f) => format!("{f}"),
+                            CData::Int(i) => format!("{i}"),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default();
+                    let table = if table_raw.is_empty() {
+                        SourceTable::HeaderRow(1)
+                    } else {
+                        parse_source_table(&table_raw)
+                    };
+                    named_sources.insert(name, SourceDecl { sheet, table });
+                }
+            }
+        }
+    }
+
     Ok(WorkbookPlan {
         config,
         sheets,
         inputs,
         lists,
+        named_sources,
     })
 }
 

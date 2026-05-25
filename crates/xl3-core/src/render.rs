@@ -35,18 +35,47 @@ pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
         .ok_or_else(|| anyhow::anyhow!("no source_sheet in __config__ and source workbook is empty"))?;
     let source_table = plan.config.source_table();
     let source = source_reader.read(&source_sheet, &source_table)?;
-    render(&plan, &source)
+    // Load every additional named source declared on `__sources__`.
+    let mut named_sources: HashMap<String, SourceData> = HashMap::new();
+    for (name, decl) in &plan.named_sources {
+        let data = source_reader.read(&decl.sheet, &decl.table)?;
+        named_sources.insert(name.clone(), data);
+    }
+    render_with_sources(&plan, &source, &named_sources)
 }
 
 pub fn render(plan: &WorkbookPlan, source: &SourceData) -> Result<Vec<u8>> {
+    render_with_sources(plan, source, &HashMap::new())
+}
+
+pub fn render_with_sources(
+    plan: &WorkbookPlan,
+    source: &SourceData,
+    named_sources: &HashMap<String, SourceData>,
+) -> Result<Vec<u8>> {
     // Pre-bundle the reserved-namespace values that don't change
     // between expansion rows. The renderer slots them into every ctx
     // it builds.
     let inputs_value = inputs_to_value(&plan.inputs);
     let lists_value = lists_to_value(&plan.lists);
+    // Each named source becomes a `Value::Rows` handle that the
+    // evaluator can aggregate over via `Source[Field]` references.
+    let named_source_handles: HashMap<String, Value> = named_sources
+        .iter()
+        .map(|(name, data)| {
+            let handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(data.rows.clone());
+            (name.clone(), Value::Rows(handle))
+        })
+        .collect();
     let mut out_sheets = Vec::with_capacity(plan.sheets.len());
     for sheet in &plan.sheets {
-        out_sheets.push(render_sheet(sheet, source, &inputs_value, &lists_value)?);
+        out_sheets.push(render_sheet(
+            sheet,
+            source,
+            &inputs_value,
+            &lists_value,
+            &named_source_handles,
+        )?);
     }
     write_workbook(&out_sheets)
 }
@@ -56,12 +85,18 @@ fn render_sheet(
     source: &SourceData,
     inputs_value: &Value,
     lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
 ) -> Result<RenderedSheet> {
     let mut rows: Vec<Vec<Value>> = Vec::new();
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
-                rows.push(render_static_row(cells, inputs_value, lists_value)?);
+                rows.push(render_static_row(
+                    cells,
+                    inputs_value,
+                    lists_value,
+                    named_sources,
+                )?);
             }
             RowPlan::ExpandDown { cells, directives } => {
                 let effective = apply_directives(&source.rows, directives, lists_value)?;
@@ -72,6 +107,7 @@ fn render_sheet(
                     inject_rownum(&mut ctx, idx + 1);
                     ctx.insert("__inputs__".to_string(), inputs_value.clone());
                     ctx.insert("__lists__".to_string(), lists_value.clone());
+                    inject_named_sources(&mut ctx, named_sources);
                     rows.push(render_template_row(cells, &ctx)?);
                 }
             }
@@ -82,6 +118,7 @@ fn render_sheet(
                     &effective,
                     inputs_value,
                     lists_value,
+                    named_sources,
                 )?);
             }
         }
@@ -90,6 +127,17 @@ fn render_sheet(
         name: plan.name.clone(),
         rows,
     })
+}
+
+fn inject_named_sources(ctx: &mut EvalContext, named_sources: &HashMap<String, Value>) {
+    for (name, handle) in named_sources {
+        // Avoid clobbering a same-named source-row column. The current
+        // row's field takes precedence (xl3 doesn't allow conflicting
+        // names, but we lean permissive here rather than erroring).
+        if !ctx.contains_key(name) {
+            ctx.insert(name.clone(), handle.clone());
+        }
+    }
 }
 
 fn apply_directives(
@@ -146,6 +194,7 @@ fn render_expand_right_row(
     rows: &[HashMap<String, Value>],
     inputs_value: &Value,
     lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
 ) -> Result<Vec<Value>> {
     let mut out = Vec::with_capacity(cells.len() + rows.len());
     let mut emitted_expansion = false;
@@ -167,6 +216,7 @@ fn render_expand_right_row(
                     inject_rownum(&mut ctx, idx + 1);
                     ctx.insert("__inputs__".to_string(), inputs_value.clone());
                     ctx.insert("__lists__".to_string(), lists_value.clone());
+                    inject_named_sources(&mut ctx, named_sources);
                     out.push(eval_cell(t, &ctx)?);
                 }
             }
@@ -179,14 +229,17 @@ fn render_static_row(
     cells: &[CellSource],
     inputs_value: &Value,
     lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
 ) -> Result<Vec<Value>> {
     // "Static" rows can still contain `{{ ... }}` blocks that refer to
-    // reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`).
-    // xl3 evaluates these with an empty-row context plus the reserved
-    // namespaces — no source row, no aggregate handle.
+    // reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`)
+    // or aggregates over named sources. xl3 evaluates these with an
+    // empty-row context plus the reserved namespaces — no source row,
+    // no current-block aggregate handle.
     let mut ctx: EvalContext = HashMap::new();
     ctx.insert("__inputs__".to_string(), inputs_value.clone());
     ctx.insert("__lists__".to_string(), lists_value.clone());
+    inject_named_sources(&mut ctx, named_sources);
     let mut out = Vec::with_capacity(cells.len());
     for c in cells {
         let value = match c {

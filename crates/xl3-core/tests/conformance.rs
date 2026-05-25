@@ -273,6 +273,17 @@ fn fixture_100_arithmetic_string_coerces_to_number() {
 }
 
 #[test]
+fn fixture_069_source_multi_declaration() {
+    run_fixture("069-source-multi-declaration").expect("fixture 069 should pass");
+}
+
+#[test]
+fn fixture_070_source_aggregate_cross_source() {
+    run_fixture("070-source-aggregate-cross-source")
+        .expect("fixture 070 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

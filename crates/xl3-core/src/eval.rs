@@ -566,15 +566,33 @@ fn try_row_aggregate(name: &str, args: &[Ast], ctx: &EvalContext) -> Result<Opti
     if name == "COUNT" && args.is_empty() {
         return Ok(rows.map(|r| Value::Number(r.len() as f64)));
     }
-    // SUM/AVERAGE/AVG/MIN/MAX/COUNT with a single bracket arg → row aggregate.
     if args.len() == 1 {
-        if let Ast::Bracket(field) = &args[0] {
-            if let Some(rows) = rows {
-                return Ok(Some(aggregate_over_field(name, rows, field)?));
+        match &args[0] {
+            // `SUM([Field])` etc — aggregate over the active block.
+            Ast::Bracket(field) => {
+                if let Some(rows) = rows {
+                    return Ok(Some(aggregate_over_field(name, rows, field)?));
+                }
             }
+            // `SUM(Source[Field])` etc — aggregate over the named
+            // source declared on `__sources__`. xl3 ADR-0012: this
+            // works regardless of whether we're inside an expansion
+            // block.
+            Ast::ReservedRef(source, field) => {
+                if !is_reserved_namespace(source) {
+                    if let Some(Value::Rows(handle)) = ctx.get(source) {
+                        return Ok(Some(aggregate_over_field(name, handle, field)?));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Ok(None)
+}
+
+fn is_reserved_namespace(name: &str) -> bool {
+    name.starts_with("__") && name.ends_with("__")
 }
 
 fn is_row_aggregate_name(name: &str) -> bool {
