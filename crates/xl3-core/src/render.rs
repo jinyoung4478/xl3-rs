@@ -223,6 +223,10 @@ fn render_sheet(
                         _ => None,
                     })
                     .unwrap_or_default();
+                let active_source: Option<String> = directives.iter().find_map(|d| match d {
+                    Directive::Source(n) => Some(n.clone()),
+                    _ => None,
+                });
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
 
                 let mut global_idx = 0usize;
@@ -238,6 +242,18 @@ fn render_sheet(
                             inject_rownum(&mut ctx, *global_idx);
                             ctx.insert("__inputs__".to_string(), inputs_value.clone());
                             ctx.insert("__lists__".to_string(), lists_value.clone());
+                            // ADR-0012: when `@source Name` is active,
+                            // `Name[Col]` should resolve to the current
+                            // row's column (active source = default).
+                            // Expose the row as Value::Map(<active>)
+                            // *before* inject_named_sources so its
+                            // contains_key skip preserves this Map.
+                            if let Some(name) = &active_source {
+                                ctx.insert(
+                                    name.clone(),
+                                    Value::Map(Arc::new(source_row.clone())),
+                                );
+                            }
                             inject_named_sources(&mut ctx, named_sources);
                             rows.push(render_template_row(cells, &ctx)?);
                         }
@@ -270,6 +286,7 @@ fn render_sheet(
                         inputs_value,
                         lists_value,
                         named_sources,
+                        active_source.as_deref(),
                     )?;
                 }
             }
@@ -364,6 +381,7 @@ fn render_grouped(
     inputs_value: &Value,
     lists_value: &Value,
     named_sources: &HashMap<String, Value>,
+    active_source: Option<&str>,
 ) -> Result<()> {
     if depth == group_fields.len() {
         // Leaf — emit every row through the expansion template.
@@ -374,6 +392,9 @@ fn render_grouped(
             inject_rownum(&mut ctx, *global_idx);
             ctx.insert("__inputs__".to_string(), inputs_value.clone());
             ctx.insert("__lists__".to_string(), lists_value.clone());
+            if let Some(name) = active_source {
+                ctx.insert(name.to_string(), Value::Map(Arc::new(source_row.clone())));
+            }
             inject_named_sources(&mut ctx, named_sources);
             out_rows.push(render_template_row(cells, &ctx)?);
         }
@@ -393,6 +414,7 @@ fn render_grouped(
             inputs_value,
             lists_value,
             named_sources,
+            active_source,
         )?;
         // Subtotal slot index for *this* level (the level we're closing).
         // Innermost = group_fields.len() - 1 → slot 0.

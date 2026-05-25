@@ -443,6 +443,12 @@ fn fixture_108_group_key_empty_blank_placeholder_sheet() {
 }
 
 #[test]
+fn fixture_092_composed_multi_source_join_filter_sort() {
+    run_fixture("092-composed-multi-source-join-filter-sort")
+        .expect("fixture 092 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

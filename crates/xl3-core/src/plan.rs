@@ -246,7 +246,7 @@ fn cell_is_template_text(s: &str) -> bool {
 /// expansion row or a static-but-templated row. A row that only
 /// references reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`)
 /// is evaluated once, not once per source row.
-fn template_depends_on_source_row(s: &str) -> bool {
+fn template_depends_on_source_row(s: &str, named_sources_to_exclude: &[&str]) -> bool {
     let mut cleaned = s.to_string();
     for ns in [
         "__config__[",
@@ -256,12 +256,44 @@ fn template_depends_on_source_row(s: &str) -> bool {
     ] {
         cleaned = cleaned.replace(ns, "");
     }
+    // Named-source references that don't belong to the *active* source
+    // are row-set refs (XLOOKUP / aggregate input), not per-row.
+    // Active-source refs (`<active>[Col]`) ARE per-row when `@source`
+    // is in scope — the caller passes in the non-active named-source
+    // names so they get stripped here.
+    for name in named_sources_to_exclude {
+        let prefix = format!("{name}[");
+        cleaned = cleaned.replace(&prefix, "");
+    }
     cleaned.contains('[')
 }
 
 pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
     let mut wb: Xlsx<_> = open_workbook(path)
         .with_context(|| format!("open template workbook at {}", path.display()))?;
+
+    // First pass: collect named-source names so the row classifier can
+    // recognise `<Source>[Column]` as a row-set reference (not a per-
+    // source-row reference).
+    let named_source_names: Vec<String> = if sheet_names_set(&wb).contains("__sources__") {
+        if let Ok(range) = wb.worksheet_range("__sources__") {
+            let (rows, cols) = range.get_size();
+            if rows >= 2 && cols >= 1 {
+                (1..rows)
+                    .filter_map(|r| match range.get((r, 0)) {
+                        Some(CData::String(s)) if !s.is_empty() => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
 
     let mut config = ConfigMeta::default();
     let sheet_names = wb.sheet_names();
@@ -313,6 +345,20 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
             let mut has_subtotal = false;
             let mut directive_only = true;
             let mut any_cell = false;
+            // The active-source (if any) earned by pending directive
+            // rows. When set, `<active>[Col]` references count as
+            // per-row refs (active source = default), while other
+            // named-source prefixes still resolve to whole row-sets.
+            let active_source: Option<&str> =
+                pending_directives.iter().find_map(|d| match d {
+                    Directive::Source(n) => Some(n.as_str()),
+                    _ => None,
+                });
+            let exclude_named: Vec<&str> = named_source_names
+                .iter()
+                .filter(|n| Some(n.as_str()) != active_source)
+                .map(|s| s.as_str())
+                .collect();
             for c in 0..cols {
                 let cell = match range.get((r, c)) {
                     None | Some(CData::Empty) => CellSource::Empty,
@@ -332,7 +378,7 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                             CellSource::Empty
                         } else {
                             directive_only = false;
-                            if template_depends_on_source_row(s) {
+                            if template_depends_on_source_row(s, &exclude_named) {
                                 has_source_template = true;
                             }
                             CellSource::Template(s.clone())
