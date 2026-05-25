@@ -834,31 +834,37 @@ fn apply_directives(
                         );
                     }
                 };
+                // ADR-0014: build a `(canonical_key) -> first matching row`
+                // index once per directive so per-primary lookup is O(1)
+                // instead of an O(M) scan. xl3 (TS) does the same via a
+                // WeakMap-cached canonicalString → row index; we rebuild
+                // here per render — caching across renders is a future
+                // optimisation but already dwarfed by the linear scan.
+                let mut index: HashMap<String, Arc<HashMap<String, Value>>> =
+                    HashMap::with_capacity(target_rows.len());
+                for t in target_rows.iter() {
+                    if let Some(v) = t.get(match_field) {
+                        let key = v.canonical();
+                        index
+                            .entry(key)
+                            .or_insert_with(|| Arc::new(t.clone()));
+                    }
+                }
                 let mut joined = Vec::with_capacity(current.len());
                 for mut row in current.drain(..) {
                     let primary_val = row
                         .get(primary_field)
                         .cloned()
                         .unwrap_or(Value::Empty);
-                    let matched = target_rows.iter().find(|t| {
-                        t.get(match_field)
-                            .map(|v| {
-                                // Equality semantics mirror eval::compare
-                                // (numeric path first, then canonical).
-                                crate::eval::compare(v, &primary_val)
-                                    .map(|c| c == 0)
-                                    .unwrap_or(false)
-                            })
-                            .unwrap_or(false)
-                    });
-                    if let Some(m) = matched {
+                    let key = primary_val.canonical();
+                    if let Some(m) = index.get(&key) {
                         // Promote the joined row into the per-row ctx via
                         // the same key the named source occupies. The
                         // ReservedRef path then resolves `Source[Field]`
                         // against this Map instead of the full Rows.
                         row.insert(
                             source.clone(),
-                            Value::Map(Arc::new(m.clone())),
+                            Value::Map(Arc::clone(m)),
                         );
                         joined.push(row);
                     }
