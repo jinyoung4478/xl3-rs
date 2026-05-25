@@ -308,6 +308,12 @@ fn fixture_failure_taxonomy() {
                 let bucket = if msg.contains("'@'") || msg.contains("@filter") || msg.contains("@repeat") {
                     "directive-at"
                 } else if msg.contains("unknown function") {
+                    let fname = msg
+                        .split("unknown function ")
+                        .nth(1)
+                        .map(|s| s.split_whitespace().next().unwrap_or(""))
+                        .unwrap_or("");
+                    eprintln!("  [unknown-function] {name}: {fname}");
                     "unknown-function"
                 } else if msg.contains("Source[") || msg.contains("source") {
                     "source-or-cross-source"
