@@ -213,6 +213,8 @@ fn render_sheet(
                 cells,
                 directives,
                 subtotal_rows,
+                side_rows,
+                col_range,
             } => {
                 let block_rows = resolve_block_rows(directives, source, named_sources);
                 let effective =
@@ -231,12 +233,12 @@ fn render_sheet(
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
 
                 let mut global_idx = 0usize;
-                let mut emit_expansion =
+                let emit_expansion =
                     |group_rows: &Vec<HashMap<String, Value>>,
                      rows: &mut Vec<Vec<Value>>,
                      global_idx: &mut usize|
                      -> Result<()> {
-                        for source_row in group_rows {
+                        for (iter_idx, source_row) in group_rows.iter().enumerate() {
                             *global_idx += 1;
                             let mut ctx: EvalContext = source_row.clone();
                             inject_rows(&mut ctx, Arc::clone(&rows_handle));
@@ -246,9 +248,6 @@ fn render_sheet(
                             // ADR-0012: when `@source Name` is active,
                             // `Name[Col]` should resolve to the current
                             // row's column (active source = default).
-                            // Expose the row as Value::Map(<active>)
-                            // *before* inject_named_sources so its
-                            // contains_key skip preserves this Map.
                             if let Some(name) = &active_source {
                                 ctx.insert(
                                     name.clone(),
@@ -256,7 +255,15 @@ fn render_sheet(
                                 );
                             }
                             inject_named_sources(&mut ctx, named_sources);
-                            rows.push(render_template_row(cells, &ctx)?);
+                            // ADR-0066 column-scoped splice: side cells
+                            // outside the expansion's col_range come
+                            // from the *original* row at this iter index
+                            // (iter 0 → expansion row itself, iter N+1
+                            // → side_rows[N], or Empty if exhausted).
+                            let effective_cells = compose_iteration_cells(
+                                cells, side_rows, *col_range, iter_idx,
+                            );
+                            rows.push(render_template_row(&effective_cells, &ctx)?);
                         }
                         Ok(())
                     };
@@ -281,6 +288,8 @@ fn render_sheet(
                         0,
                         cells,
                         subtotal_rows,
+                        side_rows,
+                        *col_range,
                         &mut rows,
                         &mut global_idx,
                         &rows_handle,
@@ -376,6 +385,8 @@ fn render_grouped(
     depth: usize,
     cells: &[CellSource],
     subtotal_rows: &[Vec<CellSource>],
+    side_rows: &[Vec<CellSource>],
+    col_range: Option<(usize, usize)>,
     out_rows: &mut Vec<Vec<Value>>,
     global_idx: &mut usize,
     rows_handle: &Arc<Vec<HashMap<String, Value>>>,
@@ -386,7 +397,7 @@ fn render_grouped(
 ) -> Result<()> {
     if depth == group_fields.len() {
         // Leaf — emit every row through the expansion template.
-        for source_row in rows {
+        for (iter_idx, source_row) in rows.iter().enumerate() {
             *global_idx += 1;
             let mut ctx: EvalContext = source_row.clone();
             inject_rows(&mut ctx, Arc::clone(rows_handle));
@@ -397,7 +408,9 @@ fn render_grouped(
                 ctx.insert(name.to_string(), Value::Map(Arc::new(source_row.clone())));
             }
             inject_named_sources(&mut ctx, named_sources);
-            out_rows.push(render_template_row(cells, &ctx)?);
+            let effective_cells =
+                compose_iteration_cells(cells, side_rows, col_range, iter_idx);
+            out_rows.push(render_template_row(&effective_cells, &ctx)?);
         }
         return Ok(());
     }
@@ -409,6 +422,8 @@ fn render_grouped(
             depth + 1,
             cells,
             subtotal_rows,
+            side_rows,
+            col_range,
             out_rows,
             global_idx,
             rows_handle,
@@ -471,6 +486,41 @@ fn render_subtotal_row(
         out.push(value);
     }
     Ok(out)
+}
+
+/// Build the cell list for one expansion iteration. Inside the
+/// `col_range` we use the original expansion row's cells (which the
+/// evaluator will substitute against the current source row). Outside
+/// the range:
+/// - iteration 0 → the expansion row's own outside-range cells
+///   (literals, side templates) live in this row
+/// - iteration N > 0 → look up `side_rows[N-1]` for the same column;
+///   absent slots emit Empty (ADR-0066 column-scoped splice).
+fn compose_iteration_cells(
+    cells: &[CellSource],
+    side_rows: &[Vec<CellSource>],
+    col_range: Option<(usize, usize)>,
+    iter_idx: usize,
+) -> Vec<CellSource> {
+    let Some((lo, hi)) = col_range else {
+        return cells.to_vec();
+    };
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let inside = i >= lo && i <= hi;
+            if inside || iter_idx == 0 {
+                cell.clone()
+            } else {
+                side_rows
+                    .get(iter_idx - 1)
+                    .and_then(|r| r.get(i))
+                    .cloned()
+                    .unwrap_or(CellSource::Empty)
+            }
+        })
+        .collect()
 }
 
 fn inject_named_sources(ctx: &mut EvalContext, named_sources: &HashMap<String, Value>) {

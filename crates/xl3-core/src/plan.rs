@@ -188,6 +188,16 @@ pub enum RowPlan {
         /// subtotal cells once per group (when `@group` is active).
         /// Always empty when no `@group` directive is in scope.
         subtotal_rows: Vec<Vec<CellSource>>,
+        /// Rows that follow the expansion row and contribute *side*
+        /// (outside-col-range) cells per ADR-0066. Each side row maps
+        /// onto the corresponding subsequent source-row position.
+        /// Always empty when no side cells were absorbed.
+        side_rows: Vec<Vec<CellSource>>,
+        /// Inclusive (first, last) column range that the expansion
+        /// templates occupy. Cells outside this range are "side"
+        /// cells that follow ADR-0066 column-scoped splice semantics.
+        /// `None` when there are no template cells (degenerate row).
+        col_range: Option<(usize, usize)>,
     },
     /// Same row, repeated *to the right* once per source row. The first
     /// template cell in the row is the anchor — its column is the
@@ -252,6 +262,41 @@ fn cell_is_template_text(s: &str) -> bool {
 /// expansion row or a static-but-templated row. A row that only
 /// references reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`)
 /// is evaluated once, not once per source row.
+/// Inclusive `(first, last)` column range of the cells flagged as
+/// `Template { .. }` or `Subtotal { .. }`. The expansion engine
+/// rewrites only these columns when iterating source rows; columns
+/// outside the range follow the column-scoped splice rule in
+/// ADR-0066. Returns `None` if no template-bearing cells were found.
+fn compute_template_col_range(cells: &[CellSource]) -> Option<(usize, usize)> {
+    let mut first: Option<usize> = None;
+    let mut last: usize = 0;
+    for (i, c) in cells.iter().enumerate() {
+        let is_template = matches!(c, CellSource::Template { .. } | CellSource::Subtotal { .. });
+        if is_template {
+            first.get_or_insert(i);
+            last = i;
+        }
+    }
+    first.map(|f| (f, last))
+}
+
+/// True iff every non-Empty cell in `cells` sits *outside* the given
+/// column range. Used to detect ADR-0066 "side rows" that the planner
+/// should absorb into the preceding ExpandDown.
+fn cells_only_outside_range(cells: &[CellSource], range: (usize, usize)) -> bool {
+    let (lo, hi) = range;
+    let mut any_outside = false;
+    for (i, c) in cells.iter().enumerate() {
+        let inside = i >= lo && i <= hi;
+        match c {
+            CellSource::Empty => continue,
+            _ if inside => return false,
+            _ => any_outside = true,
+        }
+    }
+    any_outside
+}
+
 fn template_depends_on_source_row(s: &str, named_sources_to_exclude: &[&str]) -> bool {
     let mut cleaned = s.to_string();
     for ns in [
@@ -442,11 +487,14 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
 
             let row_plan = if has_source_template {
                 let directives = std::mem::take(&mut pending_directives);
+                let col_range = compute_template_col_range(&row_cells);
                 let plan = match pending_direction {
                     Direction::Down => RowPlan::ExpandDown {
                         cells: row_cells,
                         directives,
                         subtotal_rows: Vec::new(),
+                        side_rows: Vec::new(),
+                        col_range,
                     },
                     Direction::Right => RowPlan::ExpandRight {
                         cells: row_cells,
@@ -456,6 +504,22 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                 pending_direction = Direction::Down;
                 plan
             } else {
+                // ADR-0066 column-scoped splice: a row whose template-
+                // bearing cells only live *outside* the previous
+                // ExpandDown's col_range is a "side row" — it travels
+                // with later source-row iterations of the expansion at
+                // its original row position. Otherwise it's static.
+                if let Some(RowPlan::ExpandDown {
+                    col_range: Some(range),
+                    side_rows,
+                    ..
+                }) = row_plans.last_mut()
+                {
+                    if cells_only_outside_range(&row_cells, *range) {
+                        side_rows.push(row_cells);
+                        continue;
+                    }
+                }
                 RowPlan::Static(row_cells)
             };
             row_plans.push(row_plan);

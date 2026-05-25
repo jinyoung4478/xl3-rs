@@ -497,6 +497,24 @@ fn fixture_010_numfmt_text_format_coercion() {
         .expect("fixture 010 should pass");
 }
 
+#[test]
+fn fixture_141_block_column_scoped_side_cells() {
+    run_fixture("141-block-column-scoped-side-cells")
+        .expect("fixture 141 should pass");
+}
+
+#[test]
+fn fixture_142_block_column_scoped_side_formulas() {
+    run_fixture("142-block-column-scoped-side-formulas")
+        .expect("fixture 142 should pass");
+}
+
+#[test]
+fn fixture_143_block_shared_formula_side_cells() {
+    run_fixture("143-block-shared-formula-side-cells")
+        .expect("fixture 143 should pass");
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {
