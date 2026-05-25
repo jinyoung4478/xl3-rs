@@ -17,6 +17,7 @@
 pub mod directives;
 pub mod eval;
 pub mod functions;
+pub mod introspect;
 pub mod output;
 pub mod output_model;
 pub mod plan;
@@ -28,6 +29,10 @@ pub mod value;
 pub use calamine;
 pub use rust_xlsxwriter;
 
+pub use introspect::{
+    preview, read_template_inputs, InputKind, InputSpec, PreviewFile, PreviewResult,
+    PreviewSheet, PreviewSource,
+};
 pub use output_model::{OutputFile, XtlWarning};
 pub use plan::{CellSource, RowPlan, SheetPlan, WorkbookPlan};
 pub use render::{render, render_to_files};
