@@ -199,6 +199,12 @@ fn fixture_047_aggregate_functions() {
 }
 
 #[test]
+fn fixture_041_row_function_inside_repeat_block() {
+    run_fixture("041-row-function-inside-repeat-block")
+        .expect("fixture 041 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

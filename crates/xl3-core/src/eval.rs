@@ -24,6 +24,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::value::{RowsHandle, Value};
 
 const ROWS_KEY: &str = "__rows__";
+const ROWNUM_KEY: &str = "__rownum__";
 
 pub type EvalContext = HashMap<String, Value>;
 
@@ -475,11 +476,20 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
             Ok(Value::Bool(!is_truthy(&v)))
         }
         Ast::Call(name, args) => {
+            let upper = name.to_ascii_uppercase();
+            // ROW() — 1-based source row index inside the active
+            // expansion block. Resolved from ctx so the render layer
+            // owns the actual numbering.
+            if upper == "ROW" && args.is_empty() {
+                return Ok(ctx
+                    .get(ROWNUM_KEY)
+                    .cloned()
+                    .unwrap_or(Value::Empty));
+            }
             // Row-aggregate dispatch (xl3 ADR-0027 / 0044): SUM/AVG/MIN/MAX
             // applied to a column ref means "aggregate over the active
             // block's source rows", and COUNT() with no arg means row
             // count. Anything else falls through to the scalar builtins.
-            let upper = name.to_ascii_uppercase();
             if let Some(result) = try_row_aggregate(&upper, args, ctx)? {
                 return Ok(result);
             }
@@ -606,6 +616,11 @@ fn aggregate_over_field(
 /// into an evaluation context.
 pub fn inject_rows(ctx: &mut EvalContext, rows: RowsHandle) {
     ctx.insert(ROWS_KEY.to_string(), Value::Rows(rows));
+}
+
+/// Inject the 1-based row index for the current expansion iteration.
+pub fn inject_rownum(ctx: &mut EvalContext, one_based: usize) {
+    ctx.insert(ROWNUM_KEY.to_string(), Value::Number(one_based as f64));
 }
 
 fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {

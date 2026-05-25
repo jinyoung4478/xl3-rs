@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::directives::Directive;
-use crate::eval::{compare, eval_cell, eval_expression_str, inject_rows, is_truthy, EvalContext};
+use crate::eval::{
+    compare, eval_cell, eval_expression_str, inject_rownum, inject_rows, is_truthy, EvalContext,
+};
 use crate::output::{write_workbook, RenderedSheet};
 use crate::plan::{parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan};
 use crate::source::{CalamineSourceReader, SourceData, SourceReader};
@@ -51,9 +53,10 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
             RowPlan::ExpandDown { cells, directives } => {
                 let effective = apply_directives(&source.rows, directives)?;
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
-                for source_row in &effective {
+                for (idx, source_row) in effective.iter().enumerate() {
                     let mut ctx: EvalContext = source_row.clone();
                     inject_rows(&mut ctx, Arc::clone(&rows_handle));
+                    inject_rownum(&mut ctx, idx + 1);
                     rows.push(render_template_row(cells, &ctx)?);
                 }
             }
@@ -130,9 +133,10 @@ fn render_expand_right_row(
                     );
                 }
                 emitted_expansion = true;
-                for source_row in rows {
+                for (idx, source_row) in rows.iter().enumerate() {
                     let mut ctx: EvalContext = source_row.clone();
                     inject_rows(&mut ctx, Arc::clone(&rows_handle));
+                    inject_rownum(&mut ctx, idx + 1);
                     out.push(eval_cell(t, &ctx)?);
                 }
             }
