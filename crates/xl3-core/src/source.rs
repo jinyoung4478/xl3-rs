@@ -156,19 +156,8 @@ impl SourceReader for CalamineSourceReader {
             ));
         }
 
-        // Map each header-row column that starts a horizontal merge to
-        // the end column of its merge run (ADR-0033). A 2D merge — one
-        // that covers multiple rows AND multiple columns — is the same
-        // logical column as its 1D counterpart, so we treat any merge
-        // whose master sits on the header row as a horizontal run.
-        let merge_master_to_end: HashMap<usize, usize> = header_merges
-            .iter()
-            .filter(|d| d.start.0 as usize == header_row)
-            .map(|d| (d.start.1 as usize, d.end.1 as usize))
-            .collect();
         // Reverse map: any cell *inside* a merge that isn't the master
         // borrows the master's value (ADR-0033 vertical slave rule).
-        // Built once and reused by header scan + data row lookups.
         let slave_to_master: HashMap<(usize, usize), (u32, u32)> = header_merges
             .iter()
             .flat_map(|d| {
@@ -184,6 +173,12 @@ impl SourceReader for CalamineSourceReader {
                 out
             })
             .collect();
+        // Per-master end column lookup — used to jump past all
+        // horizontal slave columns once we've emitted a master.
+        let master_end_col: HashMap<(u32, u32), usize> = header_merges
+            .iter()
+            .map(|d| ((d.start.0, d.start.1), d.end.1 as usize))
+            .collect();
         let cell_at = |r: usize, c: usize| -> Option<&CData> {
             if let Some(&(mr, mc)) = slave_to_master.get(&(r, c)) {
                 range.get_value((mr, mc))
@@ -198,14 +193,34 @@ impl SourceReader for CalamineSourceReader {
         let mut headers: Vec<String> = Vec::new();
         let mut header_cols: Vec<usize> = Vec::new();
         let mut c = col_first;
+        let mut seen_masters: std::collections::HashSet<(u32, u32)> =
+            std::collections::HashSet::new();
         while c < col_last_excl {
-            let cell = cell_at(header_row, c);
+            // The effective master position for (header_row, c): if the
+            // cell is a merge slave, follow it to the master; otherwise
+            // the cell is its own master.
+            let master_pos = slave_to_master
+                .get(&(header_row, c))
+                .copied()
+                .unwrap_or((header_row as u32, c as u32));
+
+            // ADR-0033: a master claims its whole horizontal run as one
+            // logical column. Subsequent slave columns sharing the same
+            // master must not contribute additional headers.
+            if !seen_masters.insert(master_pos) {
+                c += 1;
+                continue;
+            }
+
+            let cell = range.get_value(master_pos);
             match cell {
                 Some(CData::String(s)) if !s.is_empty() => {
                     headers.push(s.clone());
                     header_cols.push(c);
-                    if let Some(&end) = merge_master_to_end.get(&c) {
-                        c = end + 1;
+                    // Jump past the merge's horizontal extent so we
+                    // resume scanning at the next logical column.
+                    if let Some(&end_col) = master_end_col.get(&master_pos) {
+                        c = end_col + 1;
                     } else {
                         c += 1;
                     }
