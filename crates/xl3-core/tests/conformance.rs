@@ -463,6 +463,22 @@ fn fixture_126_date_arithmetic_functions() {
     run_fixture("126-date-arithmetic-functions").expect("fixture 126 should pass");
 }
 
+#[test]
+fn fixture_128_function_batch_0044() {
+    run_fixture("128-function-batch-0044").expect("fixture 128 should pass");
+}
+
+#[test]
+fn fixture_055_if_truthy_zero_and_empty() {
+    run_fixture("055-if-truthy-zero-and-empty").expect("fixture 055 should pass");
+}
+
+#[test]
+fn fixture_062_concat_empty_stringifies_to_empty() {
+    run_fixture("062-concat-empty-stringifies-to-empty")
+        .expect("fixture 062 should pass");
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {

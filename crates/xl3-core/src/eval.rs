@@ -781,7 +781,21 @@ fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {
             }
             Value::Number(coerce_number(l)? / rn)
         }
-        Op::Concat => Value::String(format!("{}{}", l.canonical(), r.canonical())),
+        Op::Concat => {
+            // xl3 ADR-0009: blank operands (Empty, whitespace-only
+            // strings) contribute the empty string in `&` concat, not
+            // their literal whitespace. This keeps `"[" & [Memo] & "]"`
+            // emitting `[]` for a missing memo even when the source
+            // cell stores `"   "`.
+            let coerce = |v: &Value| -> String {
+                if crate::source::is_blank_value(v) {
+                    String::new()
+                } else {
+                    v.canonical()
+                }
+            };
+            Value::String(format!("{}{}", coerce(l), coerce(r)))
+        }
         Op::Lt => Value::Bool(compare(l, r)? < 0),
         Op::Gt => Value::Bool(compare(l, r)? > 0),
         Op::Le => Value::Bool(compare(l, r)? <= 0),
@@ -847,7 +861,10 @@ pub fn is_truthy(v: &Value) -> bool {
         Value::Bool(b) => *b,
         Value::Empty => false,
         Value::Number(n) => *n != 0.0,
-        Value::String(s) => !s.is_empty(),
+        // xl3 ADR-0007/0008: whitespace-only strings are blank → falsy.
+        // Same rule as `is_blank_value` (source-row skip / COUNT /
+        // ISBLANK).
+        Value::String(s) => !s.chars().all(char::is_whitespace),
         Value::Rows(h) => !h.is_empty(),
         Value::Map(m) => !m.is_empty(),
         Value::List(l) => !l.is_empty(),

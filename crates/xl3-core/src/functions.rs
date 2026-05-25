@@ -54,6 +54,36 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         "DAY" => day(args),
         "EOMONTH" => eomonth(args),
         "EDATE" => edate(args),
+        "DATE" => {
+            if args.len() != 3 {
+                bail!("DATE expects 3 arguments, got {}", args.len());
+            }
+            let y = integer_arg("DATE year", &args[0])?;
+            let m = integer_arg("DATE month", &args[1])?;
+            let d = integer_arg("DATE day", &args[2])?;
+            // Excel DATE is lenient with out-of-range month/day, but the
+            // corpus only exercises in-range values; reject obvious bad
+            // input rather than silently coercing.
+            if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+                bail!("DATE({y},{m},{d}) — month/day out of range");
+            }
+            Ok(Value::Number(date_to_excel_serial(y, m as u32, d as u32)?))
+        }
+        "IFERROR" => {
+            if args.len() != 2 {
+                bail!("IFERROR expects 2 arguments, got {}", args.len());
+            }
+            // Our error model surfaces division-by-zero / other failures
+            // as Value::Empty (ADR-0025 stage-1). IFERROR replaces Empty
+            // results with the fallback. A first-class Value::Error
+            // variant would let us distinguish "blank" from "errored"
+            // — future work.
+            Ok(if matches!(&args[0], Value::Empty) {
+                args[1].clone()
+            } else {
+                args[0].clone()
+            })
+        }
         "UPPER" => {
             if args.len() != 1 {
                 bail!("UPPER expects 1 argument, got {}", args.len());
