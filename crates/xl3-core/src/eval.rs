@@ -536,6 +536,12 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
             if upper == "ROW" && args.is_empty() {
                 return Ok(ctx.get(ROWNUM_KEY).cloned().unwrap_or(Value::Empty));
             }
+            // XLOOKUP needs the AST of its source-bracketed args, so it
+            // routes through its own dispatch ahead of scalar builtins.
+            // xl3 ADR-0013.
+            if upper == "XLOOKUP" {
+                return try_xlookup(args, ctx);
+            }
             // Row-aggregate dispatch (xl3 ADR-0027 / 0044): SUM/AVG/MIN/MAX
             // applied to a column ref means "aggregate over the active
             // block's source rows", and COUNT() with no arg means row
@@ -593,6 +599,52 @@ fn try_row_aggregate(name: &str, args: &[Ast], ctx: &EvalContext) -> Result<Opti
 
 fn is_reserved_namespace(name: &str) -> bool {
     name.starts_with("__") && name.ends_with("__")
+}
+
+/// `XLOOKUP(needle, Source[lookupCol], Source[returnCol], [fallback])`.
+/// Walks the named source's rows and returns the first matching row's
+/// `returnCol`. Falls back to the 4th arg's value when nothing matches.
+fn try_xlookup(args: &[Ast], ctx: &EvalContext) -> Result<Value> {
+    if !(3..=4).contains(&args.len()) {
+        bail!(
+            "XLOOKUP expects 3 or 4 arguments, got {} (signature: XLOOKUP(value, Source[lookupCol], Source[returnCol], [fallback]))",
+            args.len()
+        );
+    }
+    let needle = eval_ast(&args[0], ctx)?;
+    let (lookup_src, lookup_field) = expect_source_bracket(&args[1], "XLOOKUP arg 2")?;
+    let (return_src, return_field) = expect_source_bracket(&args[2], "XLOOKUP arg 3")?;
+    if lookup_src != return_src {
+        bail!(
+            "XLOOKUP arg 2 source {lookup_src:?} and arg 3 source {return_src:?} must match"
+        );
+    }
+    let rows = match ctx.get(lookup_src) {
+        Some(Value::Rows(h)) => h,
+        _ => bail!(
+            "XLOOKUP source {lookup_src:?} is not declared in __sources__"
+        ),
+    };
+    for row in rows.iter() {
+        let cell = row.get(lookup_field).cloned().unwrap_or(Value::Empty);
+        if values_equal(&cell, &needle) {
+            return Ok(row.get(return_field).cloned().unwrap_or(Value::Empty));
+        }
+    }
+    if args.len() == 4 {
+        eval_ast(&args[3], ctx)
+    } else {
+        Ok(Value::Empty)
+    }
+}
+
+fn expect_source_bracket<'a>(ast: &'a Ast, role: &str) -> Result<(&'a String, &'a String)> {
+    match ast {
+        Ast::ReservedRef(src, field) if !is_reserved_namespace(src) => Ok((src, field)),
+        _ => bail!(
+            "{role} must be a source-prefixed bracket reference like Source[Column]"
+        ),
+    }
 }
 
 fn is_row_aggregate_name(name: &str) -> bool {

@@ -289,6 +289,16 @@ fn fixture_071_source_directive_active() {
 }
 
 #[test]
+fn fixture_074_xlookup_basic() {
+    run_fixture("074-xlookup-basic").expect("fixture 074 should pass");
+}
+
+#[test]
+fn fixture_075_xlookup_fallback() {
+    run_fixture("075-xlookup-fallback").expect("fixture 075 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
