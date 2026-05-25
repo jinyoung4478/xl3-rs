@@ -40,6 +40,10 @@ pub enum Directive {
         match_field: String,
         primary_field: String,
     },
+    /// `@group [Field]` — partition the (already-sorted) rows by
+    /// `Field` and emit one subtotal row per group, after the last
+    /// data row of that group (ADR-0038).
+    Group(String),
     /// Captured but not yet acted on. Lets the planner classify rows as
     /// "directive only" without exploding when richer fixtures hit.
     Unhandled(String),
@@ -110,6 +114,21 @@ fn parse_one(inner: &str) -> Option<Directive> {
             }
         }
         "join" => parse_join(rest),
+        "group" => {
+            // `@group [Field]` or `@group Field`. The bracket form is
+            // canonical in xl3 templates; we accept both.
+            let body = rest.trim();
+            let field = body
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .map(str::trim)
+                .unwrap_or(body);
+            if field.is_empty() {
+                Directive::Unhandled("@group (empty)".into())
+            } else {
+                Directive::Group(field.to_string())
+            }
+        }
         _ => Directive::Unhandled(format!("@{name} {rest}").trim().to_string()),
     })
 }

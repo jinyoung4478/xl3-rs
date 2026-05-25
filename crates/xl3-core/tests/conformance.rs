@@ -354,6 +354,12 @@ fn fixture_063_compare_empty_vs_value() {
 }
 
 #[test]
+fn fixture_132_group_single_level_subtotal() {
+    run_fixture("132-group-single-level-subtotal")
+        .expect("fixture 132 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

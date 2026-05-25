@@ -102,18 +102,62 @@ fn render_sheet(
                     named_sources,
                 )?);
             }
-            RowPlan::ExpandDown { cells, directives } => {
+            RowPlan::ExpandDown {
+                cells,
+                directives,
+                subtotal_rows,
+            } => {
                 let block_rows = resolve_block_rows(directives, source, named_sources);
-                let effective = apply_directives(&block_rows, directives, lists_value, named_sources)?;
+                let effective =
+                    apply_directives(&block_rows, directives, lists_value, named_sources)?;
+                let group_field = directives.iter().find_map(|d| match d {
+                    Directive::Group(f) => Some(f.clone()),
+                    _ => None,
+                });
+                let groups = partition_into_groups(&effective, group_field.as_deref());
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
-                for (idx, source_row) in effective.iter().enumerate() {
-                    let mut ctx: EvalContext = source_row.clone();
-                    inject_rows(&mut ctx, Arc::clone(&rows_handle));
-                    inject_rownum(&mut ctx, idx + 1);
-                    ctx.insert("__inputs__".to_string(), inputs_value.clone());
-                    ctx.insert("__lists__".to_string(), lists_value.clone());
-                    inject_named_sources(&mut ctx, named_sources);
-                    rows.push(render_template_row(cells, &ctx)?);
+
+                let mut global_idx = 0usize;
+                for group in &groups {
+                    let group_handle: Arc<Vec<HashMap<String, Value>>> =
+                        Arc::new(group.clone());
+                    for source_row in group {
+                        global_idx += 1;
+                        let mut ctx: EvalContext = source_row.clone();
+                        inject_rows(&mut ctx, Arc::clone(&rows_handle));
+                        inject_rownum(&mut ctx, global_idx);
+                        ctx.insert("__inputs__".to_string(), inputs_value.clone());
+                        ctx.insert("__lists__".to_string(), lists_value.clone());
+                        inject_named_sources(&mut ctx, named_sources);
+                        rows.push(render_template_row(cells, &ctx)?);
+                    }
+                    // Subtotal rows are emitted after each group's last
+                    // data row. They share the group's rows handle (not
+                    // the whole block) so their aggregates are scoped.
+                    if !subtotal_rows.is_empty() && group_field.is_some() {
+                        for subtotal_cells in subtotal_rows {
+                            rows.push(render_subtotal_row(
+                                subtotal_cells,
+                                &group_handle,
+                                inputs_value,
+                                lists_value,
+                                named_sources,
+                            )?);
+                        }
+                    }
+                }
+                // No `@group` → render any subtotal rows once at the
+                // very end of the block over all rows.
+                if !subtotal_rows.is_empty() && group_field.is_none() {
+                    for subtotal_cells in subtotal_rows {
+                        rows.push(render_subtotal_row(
+                            subtotal_cells,
+                            &rows_handle,
+                            inputs_value,
+                            lists_value,
+                            named_sources,
+                        )?);
+                    }
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
@@ -156,6 +200,73 @@ fn resolve_block_rows(
     } else {
         default_source.rows.clone()
     }
+}
+
+/// Split `rows` into consecutive groups of equal-valued `field`. With
+/// `field = None` the whole row set is one group. Equality uses the
+/// expression-language `compare()` so numeric/string differences match
+/// xl3's evaluator. Assumes the caller already applied any `@sort`
+/// directive — xl3 groups *consecutive* rows, not all rows with the
+/// same key.
+fn partition_into_groups(
+    rows: &[HashMap<String, Value>],
+    field: Option<&str>,
+) -> Vec<Vec<HashMap<String, Value>>> {
+    let Some(field) = field else {
+        return vec![rows.to_vec()];
+    };
+    let mut out: Vec<Vec<HashMap<String, Value>>> = Vec::new();
+    let mut current_key: Option<Value> = None;
+    for row in rows {
+        let key = row.get(field).cloned().unwrap_or(Value::Empty);
+        let same = current_key
+            .as_ref()
+            .map(|prev| crate::eval::compare(prev, &key).map(|c| c == 0).unwrap_or(false))
+            .unwrap_or(false);
+        if same {
+            out.last_mut().unwrap().push(row.clone());
+        } else {
+            out.push(vec![row.clone()]);
+            current_key = Some(key);
+        }
+    }
+    out
+}
+
+fn render_subtotal_row(
+    cells: &[CellSource],
+    group_handle: &Arc<Vec<HashMap<String, Value>>>,
+    inputs_value: &Value,
+    lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
+) -> Result<Vec<Value>> {
+    // Subtotal cells aggregate over the group's rows, with no current
+    // row in scope. Inputs / lists / named sources stay reachable so a
+    // mixed-content subtotal row (literal label + aggregate value) can
+    // reference them if needed.
+    let mut ctx: EvalContext = HashMap::new();
+    inject_rows(&mut ctx, Arc::clone(group_handle));
+    ctx.insert("__inputs__".to_string(), inputs_value.clone());
+    ctx.insert("__lists__".to_string(), lists_value.clone());
+    inject_named_sources(&mut ctx, named_sources);
+    let mut out = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let value = match cell {
+            CellSource::Empty => Value::Empty,
+            CellSource::Literal(v) => v.clone(),
+            CellSource::Template(t) => eval_cell(t, &ctx)?,
+            CellSource::Subtotal { aggregate, field } => {
+                // Build an `<FN>([<field>])` expression and run it
+                // through the evaluator — that gives us a single,
+                // well-tested aggregate path instead of a parallel
+                // implementation here.
+                let synthetic = format!("{aggregate}([{field}])");
+                eval_expression_str(&synthetic, &ctx)?
+            }
+        };
+        out.push(value);
+    }
+    Ok(out)
 }
 
 fn inject_named_sources(ctx: &mut EvalContext, named_sources: &HashMap<String, Value>) {
@@ -254,9 +365,13 @@ fn apply_directives(
                 }
                 current = joined;
             }
-            Directive::Repeat(_) | Directive::Source(_) | Directive::Unhandled(_) => {
+            Directive::Repeat(_)
+            | Directive::Source(_)
+            | Directive::Group(_)
+            | Directive::Unhandled(_) => {
                 // Repeat: direction is absorbed by the planner.
                 // Source: applied earlier by `resolve_block_rows`.
+                // Group: applied at expansion time by the renderer.
                 // Unhandled: inert at this milestone.
             }
         }
@@ -295,6 +410,12 @@ fn render_expand_right_row(
                     out.push(eval_cell(t, &ctx)?);
                 }
             }
+            CellSource::Subtotal { .. } => {
+                // @subtotal cells inside an ExpandRight block aren't a
+                // pattern xl3 emits; if one shows up we keep going so
+                // the rest of the row renders.
+                out.push(Value::Empty);
+            }
         }
     }
     Ok(out)
@@ -321,6 +442,7 @@ fn render_static_row(
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
             CellSource::Template(t) => eval_cell(t, &ctx)?,
+            CellSource::Subtotal { .. } => Value::Empty,
         };
         out.push(value);
     }
@@ -334,6 +456,7 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
             CellSource::Template(t) => out.push(eval_cell(t, ctx)?),
+            CellSource::Subtotal { .. } => out.push(Value::Empty),
         }
     }
     Ok(out)

@@ -134,6 +134,14 @@ pub enum CellSource {
     Literal(Value),
     /// Contains at least one `{{ ... }}` expression block.
     Template(String),
+    /// `{{ @subtotal <FN>(<ColumnRef>) }}` — emitted at the end of
+    /// each group when the enclosing block has a `@group` directive.
+    /// `aggregate` is normalised to uppercase; `field` is the bare
+    /// column name (Phase-1 scope: no `Source[Field]` form).
+    Subtotal {
+        aggregate: String,
+        field: String,
+    },
 }
 
 impl CellSource {
@@ -142,12 +150,38 @@ impl CellSource {
     }
 }
 
+/// Try to recognise a cell whose text is a single
+/// `{{ @subtotal <FN>(<ColumnRef>) }}` expression. Returns
+/// `(aggregate, field)` when the shape matches.
+fn parse_subtotal_cell(text: &str) -> Option<(String, String)> {
+    let trimmed = text.trim();
+    let inner = trimmed.strip_prefix("{{")?.strip_suffix("}}")?;
+    let body = inner.trim().strip_prefix("@subtotal")?.trim();
+    let paren_open = body.find('(')?;
+    let fn_name = body[..paren_open].trim();
+    let after = &body[paren_open + 1..];
+    let paren_close = after.rfind(')')?;
+    let arg = after[..paren_close].trim();
+    // Phase-1: only the bare `[Field]` form. `Source[Field]` is a
+    // future extension.
+    let field = arg
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some((fn_name.to_ascii_uppercase(), field.to_string()))
+}
+
 #[derive(Debug, Clone)]
 pub enum RowPlan {
     Static(Vec<CellSource>),
     ExpandDown {
         cells: Vec<CellSource>,
         directives: Vec<Directive>,
+        /// Rows that follow the expansion row and contribute their
+        /// subtotal cells once per group (when `@group` is active).
+        /// Always empty when no `@group` directive is in scope.
+        subtotal_rows: Vec<Vec<CellSource>>,
     },
     /// Same row, repeated *to the right* once per source row. The first
     /// template cell in the row is the anchor — its column is the
@@ -276,6 +310,7 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
         for r in 0..rows {
             let mut row_cells = Vec::with_capacity(cols);
             let mut has_source_template = false;
+            let mut has_subtotal = false;
             let mut directive_only = true;
             let mut any_cell = false;
             for c in 0..cols {
@@ -283,7 +318,15 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                     None | Some(CData::Empty) => CellSource::Empty,
                     Some(CData::String(s)) if cell_is_template_text(s) => {
                         any_cell = true;
-                        if parse_directive_cell(s).is_some() {
+                        // ADR-0038: `@subtotal` is a cell-level marker,
+                        // not a directive row marker. Recognise it
+                        // before the directive sniff so it doesn't get
+                        // swallowed by `parse_directive_cell`.
+                        if let Some((aggregate, field)) = parse_subtotal_cell(s) {
+                            directive_only = false;
+                            has_subtotal = true;
+                            CellSource::Subtotal { aggregate, field }
+                        } else if parse_directive_cell(s).is_some() {
                             // Directive cells don't surface in output;
                             // they contribute their metadata instead.
                             CellSource::Empty
@@ -323,12 +366,27 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                 continue;
             }
 
+            // A row whose template cells are all `@subtotal ...` (no
+            // other `{{ ... }}` blocks) attaches to the most recent
+            // ExpandDown block. xl3 always emits subtotal rows right
+            // after their owning expansion row, so we don't try to
+            // bridge gaps — if there isn't one immediately preceding,
+            // we fall back to treating it as a static row so the data
+            // survives.
+            if has_subtotal && !has_source_template {
+                if let Some(RowPlan::ExpandDown { subtotal_rows, .. }) = row_plans.last_mut() {
+                    subtotal_rows.push(row_cells);
+                    continue;
+                }
+            }
+
             let row_plan = if has_source_template {
                 let directives = std::mem::take(&mut pending_directives);
                 let plan = match pending_direction {
                     Direction::Down => RowPlan::ExpandDown {
                         cells: row_cells,
                         directives,
+                        subtotal_rows: Vec::new(),
                     },
                     Direction::Right => RowPlan::ExpandRight {
                         cells: row_cells,
