@@ -205,6 +205,11 @@ fn fixture_041_row_function_inside_repeat_block() {
 }
 
 #[test]
+fn fixture_065_input_text_default_applied() {
+    run_fixture("065-input-text-default-applied").expect("fixture 065 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

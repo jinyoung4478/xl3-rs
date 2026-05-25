@@ -16,7 +16,9 @@ use crate::eval::{
     compare, eval_cell, eval_expression_str, inject_rownum, inject_rows, is_truthy, EvalContext,
 };
 use crate::output::{write_workbook, RenderedSheet};
-use crate::plan::{parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan};
+use crate::plan::{
+    inputs_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
+};
 use crate::source::{CalamineSourceReader, SourceData, SourceReader};
 use crate::value::Value;
 
@@ -36,19 +38,27 @@ pub fn render_from_paths(template: &Path, data: &Path) -> Result<Vec<u8>> {
 }
 
 pub fn render(plan: &WorkbookPlan, source: &SourceData) -> Result<Vec<u8>> {
+    // Pre-bundle the reserved-namespace values that don't change
+    // between expansion rows. The renderer slots them into every ctx
+    // it builds.
+    let inputs_value = inputs_to_value(&plan.inputs);
     let mut out_sheets = Vec::with_capacity(plan.sheets.len());
     for sheet in &plan.sheets {
-        out_sheets.push(render_sheet(sheet, source)?);
+        out_sheets.push(render_sheet(sheet, source, &inputs_value)?);
     }
     write_workbook(&out_sheets)
 }
 
-fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> {
+fn render_sheet(
+    plan: &SheetPlan,
+    source: &SourceData,
+    inputs_value: &Value,
+) -> Result<RenderedSheet> {
     let mut rows: Vec<Vec<Value>> = Vec::new();
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
-                rows.push(render_static_row(cells));
+                rows.push(render_static_row(cells, inputs_value)?);
             }
             RowPlan::ExpandDown { cells, directives } => {
                 let effective = apply_directives(&source.rows, directives)?;
@@ -57,12 +67,13 @@ fn render_sheet(plan: &SheetPlan, source: &SourceData) -> Result<RenderedSheet> 
                     let mut ctx: EvalContext = source_row.clone();
                     inject_rows(&mut ctx, Arc::clone(&rows_handle));
                     inject_rownum(&mut ctx, idx + 1);
+                    ctx.insert("__inputs__".to_string(), inputs_value.clone());
                     rows.push(render_template_row(cells, &ctx)?);
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
                 let effective = apply_directives(&source.rows, directives)?;
-                rows.push(render_expand_right_row(cells, &effective)?);
+                rows.push(render_expand_right_row(cells, &effective, inputs_value)?);
             }
         }
     }
@@ -118,6 +129,7 @@ fn apply_directives(
 fn render_expand_right_row(
     cells: &[CellSource],
     rows: &[HashMap<String, Value>],
+    inputs_value: &Value,
 ) -> Result<Vec<Value>> {
     let mut out = Vec::with_capacity(cells.len() + rows.len());
     let mut emitted_expansion = false;
@@ -137,6 +149,7 @@ fn render_expand_right_row(
                     let mut ctx: EvalContext = source_row.clone();
                     inject_rows(&mut ctx, Arc::clone(&rows_handle));
                     inject_rownum(&mut ctx, idx + 1);
+                    ctx.insert("__inputs__".to_string(), inputs_value.clone());
                     out.push(eval_cell(t, &ctx)?);
                 }
             }
@@ -145,19 +158,23 @@ fn render_expand_right_row(
     Ok(out)
 }
 
-fn render_static_row(cells: &[CellSource]) -> Vec<Value> {
-    cells
-        .iter()
-        .map(|c| match c {
+fn render_static_row(cells: &[CellSource], inputs_value: &Value) -> Result<Vec<Value>> {
+    // "Static" rows can still contain `{{ ... }}` blocks that refer to
+    // reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`).
+    // xl3 evaluates these with an empty-row context plus the reserved
+    // namespaces — no source row, no aggregate handle.
+    let mut ctx: EvalContext = HashMap::new();
+    ctx.insert("__inputs__".to_string(), inputs_value.clone());
+    let mut out = Vec::with_capacity(cells.len());
+    for c in cells {
+        let value = match c {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
-            // Static rows by construction don't contain templates; the
-            // planner already routed those into `ExpandDown`. If one
-            // sneaks through, render it as text so we degrade visibly
-            // instead of losing data.
-            CellSource::Template(s) => Value::String(s.clone()),
-        })
-        .collect()
+            CellSource::Template(t) => eval_cell(t, &ctx)?,
+        };
+        out.push(value);
+    }
+    Ok(out)
 }
 
 fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Value>> {

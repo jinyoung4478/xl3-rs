@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 
@@ -77,6 +78,9 @@ pub struct SheetPlan {
 pub struct WorkbookPlan {
     pub config: ConfigMeta,
     pub sheets: Vec<SheetPlan>,
+    /// Per-input default value from the `__inputs__` sheet, keyed by
+    /// input name. Host inputs (if any) override these at render time.
+    pub inputs: HashMap<String, Value>,
 }
 
 const RESERVED_SHEETS: &[&str] = &["__config__", "__inputs__", "__lists__", "__sources__"];
@@ -90,6 +94,29 @@ fn cell_is_template_text(s: &str) -> bool {
     // cell iff it contains `{{`. We don't try to validate balance here;
     // `eval::eval_cell` will surface malformed expressions.
     s.contains("{{")
+}
+
+/// True iff the template text references a *source-row* field — i.e.
+/// a bare `[Column]` or `Source[Column]` reference that varies per
+/// source row. Reserved-namespace refs (`__inputs__[key]`,
+/// `__config__[key]`, `__lists__[key]`, `__sources__[key]`) do NOT
+/// count, because they're constants for the whole render.
+///
+/// This is the signal the planner uses to decide whether a row is an
+/// expansion row or a static-but-templated row. A row that only
+/// references reserved namespaces (e.g. `Report month: {{ __inputs__[month] }}`)
+/// is evaluated once, not once per source row.
+fn template_depends_on_source_row(s: &str) -> bool {
+    let mut cleaned = s.to_string();
+    for ns in [
+        "__config__[",
+        "__inputs__[",
+        "__lists__[",
+        "__sources__[",
+    ] {
+        cleaned = cleaned.replace(ns, "");
+    }
+    cleaned.contains('[')
 }
 
 pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
@@ -142,7 +169,7 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
         let mut pending_directives: Vec<Directive> = Vec::new();
         for r in 0..rows {
             let mut row_cells = Vec::with_capacity(cols);
-            let mut has_template = false;
+            let mut has_source_template = false;
             let mut directive_only = true;
             let mut any_cell = false;
             for c in 0..cols {
@@ -155,8 +182,10 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                             // they contribute their metadata instead.
                             CellSource::Empty
                         } else {
-                            has_template = true;
                             directive_only = false;
+                            if template_depends_on_source_row(s) {
+                                has_source_template = true;
+                            }
                             CellSource::Template(s.clone())
                         }
                     }
@@ -188,7 +217,7 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                 continue;
             }
 
-            let row_plan = if has_template {
+            let row_plan = if has_source_template {
                 let directives = std::mem::take(&mut pending_directives);
                 let plan = match pending_direction {
                     Direction::Down => RowPlan::ExpandDown {
@@ -218,5 +247,59 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
         bail!("template has no visible (non-reserved) sheets");
     }
 
-    Ok(WorkbookPlan { config, sheets })
+    // Parse `__inputs__` defaults if present. xl3's spec gives the
+    // sheet `name | type | default | label | description | options ...`
+    // columns; we only need name → default for now.
+    let mut inputs = HashMap::new();
+    if sheet_names_set(&wb).contains("__inputs__") {
+        if let Ok(range) = wb.worksheet_range("__inputs__") {
+            let (rows, cols) = range.get_size();
+            if rows >= 2 && cols >= 1 {
+                let mut headers: Vec<String> = Vec::new();
+                for c in 0..cols {
+                    headers.push(match range.get((0, c)) {
+                        Some(CData::String(s)) => s.clone(),
+                        _ => String::new(),
+                    });
+                }
+                let name_col = 0usize; // xl3: first column is always the input name
+                let default_col = headers
+                    .iter()
+                    .position(|h| h.eq_ignore_ascii_case("default"));
+                if let Some(default_col) = default_col {
+                    for r in 1..rows {
+                        let name = match range.get((r, name_col)) {
+                            Some(CData::String(s)) if !s.is_empty() => s.clone(),
+                            _ => continue,
+                        };
+                        let value = range
+                            .get((r, default_col))
+                            .map(Value::from_calamine)
+                            .unwrap_or(Value::Empty);
+                        inputs.insert(name, value);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(WorkbookPlan {
+        config,
+        sheets,
+        inputs,
+    })
+}
+
+fn sheet_names_set<R: std::io::Read + std::io::Seek>(
+    wb: &Xlsx<R>,
+) -> std::collections::HashSet<String> {
+    wb.sheet_names().into_iter().collect()
+}
+
+/// Wrap `inputs` as a single `Value::Map` so the evaluator can resolve
+/// `__inputs__[key]` via the reserved-ref path without thinking about
+/// where the value came from. Host overrides should be merged into the
+/// `inputs` map *before* this call.
+pub fn inputs_to_value(inputs: &HashMap<String, Value>) -> Value {
+    Value::Map(Arc::new(inputs.clone()))
 }

@@ -296,6 +296,10 @@ enum Ast {
     Str(String),
     Bool(bool),
     Bracket(String),
+    /// `<namespace>[key]` — e.g. `__inputs__[month]`, `__lists__[Allowed]`,
+    /// `__config__[name]`. Namespace is the ident immediately before the
+    /// `[`; key is the trimmed text inside.
+    ReservedRef(String, String),
     Call(String, Vec<Ast>),
     BinOp(Op, Box<Ast>, Box<Ast>),
     UnaryNot(Box<Ast>),
@@ -401,6 +405,11 @@ impl<'a> Parser<'a> {
                         }
                     }
                     Ok(Ast::Call(name, args))
+                } else if let Some(Tok::LBracket) = self.peek() {
+                    // `<ident>[key]` reserved-ref form.
+                    self.bump();
+                    let key = self.read_field_name_until_rbracket()?;
+                    Ok(Ast::ReservedRef(name, key))
                 } else {
                     // Bare identifier — treat as the field name lookup
                     // when present, otherwise reject. xl3 also rejects
@@ -467,6 +476,23 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
         Ast::Str(s) => Ok(Value::String(s.clone())),
         Ast::Bool(b) => Ok(Value::Bool(*b)),
         Ast::Bracket(name) => Ok(ctx.get(name).cloned().unwrap_or(Value::Empty)),
+        Ast::ReservedRef(ns, key) => {
+            // Look up the namespace in ctx — `__inputs__`, `__lists__`,
+            // `__config__`. Each is a Value::Map / Value::List handle
+            // injected by the renderer. Missing namespace => Empty,
+            // mirroring xl3's "permissive read" of an unset key.
+            match ctx.get(ns) {
+                Some(Value::Map(m)) => Ok(m.get(key).cloned().unwrap_or(Value::Empty)),
+                Some(Value::List(_)) => {
+                    // `__lists__[Name]` returns the whole list — the
+                    // namespace IS the list, but the corpus uses the
+                    // `__lists__[Name]` form (a list of lists). Treat
+                    // this branch as a misconfiguration for now.
+                    bail!("namespace {ns:?} resolved to a list, but a Map was expected")
+                }
+                _ => Ok(Value::Empty),
+            }
+        }
         Ast::UnaryNeg(inner) => {
             let v = eval_ast(inner, ctx)?;
             Ok(Value::Number(-coerce_number(&v)?))
@@ -657,7 +683,9 @@ fn coerce_number(v: &Value) -> Result<f64> {
             .trim()
             .parse::<f64>()
             .map_err(|_| anyhow!("cannot coerce string {s:?} to number")),
-        Value::Rows(_) => bail!("cannot coerce a Rows handle to a number"),
+        Value::Rows(_) | Value::Map(_) | Value::List(_) => {
+            bail!("cannot coerce a composite Value to a number")
+        }
     }
 }
 
@@ -668,6 +696,8 @@ pub fn is_truthy(v: &Value) -> bool {
         Value::Number(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
         Value::Rows(h) => !h.is_empty(),
+        Value::Map(m) => !m.is_empty(),
+        Value::List(l) => !l.is_empty(),
     }
 }
 
@@ -715,7 +745,11 @@ fn is_empty_for_ifempty(v: &Value) -> bool {
         // empty for IFEMPTY. Numbers and booleans (including 0 / false)
         // are explicitly NOT empty.
         Value::String(s) => s.chars().all(|c| c.is_ascii_whitespace()),
-        Value::Number(_) | Value::Bool(_) | Value::Rows(_) => false,
+        Value::Number(_)
+        | Value::Bool(_)
+        | Value::Rows(_)
+        | Value::Map(_)
+        | Value::List(_) => false,
     }
 }
 

@@ -16,6 +16,8 @@ use crate::calamine::Data as CalamineData;
 /// builtins (`SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`) can walk every
 /// row in the active block without each row needing to know about it.
 pub type RowsHandle = Arc<Vec<HashMap<String, Value>>>;
+pub type MapHandle = Arc<HashMap<String, Value>>;
+pub type ListHandle = Arc<Vec<Value>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -26,6 +28,12 @@ pub enum Value {
     /// All source rows visible to the active expansion block. Used for
     /// row aggregates. Not emitted as a cell value.
     Rows(RowsHandle),
+    /// Reserved-sheet dictionary value (`__config__`, `__inputs__`,
+    /// `__lists__`). Looked up via `<ns>[key]` in expressions.
+    Map(MapHandle),
+    /// A list — typically a column of `__lists__`. Used by the `in`
+    /// and `!in` operators inside `@filter`.
+    List(ListHandle),
 }
 
 impl Value {
@@ -45,11 +53,8 @@ impl Value {
                 }
             }
             Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-            // `Rows` is internal scaffolding — it should not normally
-            // surface to a cell. If it does, render as empty rather
-            // than panicking; the caller will see the empty result and
-            // can correct the template.
-            Value::Rows(_) => String::new(),
+            // Internal scaffolding values — defensive empty render.
+            Value::Rows(_) | Value::Map(_) | Value::List(_) => String::new(),
         }
     }
 

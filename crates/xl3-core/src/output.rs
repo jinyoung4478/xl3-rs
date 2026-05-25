@@ -36,8 +36,8 @@ pub fn write_workbook(sheets: &[RenderedSheet]) -> Result<Vec<u8>> {
                     Value::Bool(b) => {
                         ws.write_boolean(r32, c16, *b)?;
                     }
-                    Value::Rows(_) => {
-                        // Internal context value — never emitted to a
+                    Value::Rows(_) | Value::Map(_) | Value::List(_) => {
+                        // Internal context values — never emitted to a
                         // cell. Defensive no-op.
                     }
                 }
