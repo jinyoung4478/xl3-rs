@@ -88,15 +88,106 @@ pub fn render_with_sources(
         .collect();
     let mut out_sheets = Vec::with_capacity(plan.sheets.len());
     for sheet in &plan.sheets {
-        out_sheets.push(render_sheet(
-            sheet,
-            source,
-            &inputs_value,
-            &lists_value,
-            &named_source_handles,
-        )?);
+        if sheet.name.contains("{{") {
+            // Sheet-name is a template — ADR-0016: split the source by
+            // the evaluated key in first-seen order, emit one rendered
+            // sheet per group.
+            let groups = split_source_by_sheet_name(
+                &sheet.name,
+                source,
+                &inputs_value,
+                &lists_value,
+                &named_source_handles,
+            )?;
+            for (group_name, group_source) in groups {
+                let mut rs = render_sheet(
+                    sheet,
+                    &group_source,
+                    &inputs_value,
+                    &lists_value,
+                    &named_source_handles,
+                )?;
+                rs.name = sanitize_sheet_name(&group_name);
+                out_sheets.push(rs);
+            }
+        } else {
+            out_sheets.push(render_sheet(
+                sheet,
+                source,
+                &inputs_value,
+                &lists_value,
+                &named_source_handles,
+            )?);
+        }
     }
     write_workbook(&out_sheets)
+}
+
+/// xlsx limits sheet names to 31 characters and disallows `:\/?*[]`.
+/// Replace illegal chars with `_` and truncate so write_workbook does
+/// not error on a group key that happens to contain whitespace, dates,
+/// etc.
+fn sanitize_sheet_name(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| match c {
+            ':' | '\\' | '/' | '?' | '*' | '[' | ']' => '_',
+            _ => c,
+        })
+        .collect();
+    if cleaned.chars().count() <= 31 {
+        cleaned
+    } else {
+        cleaned.chars().take(31).collect()
+    }
+}
+
+/// Partition the source rows by the evaluated sheet-name template
+/// (xl3 ADR-0016 first-seen order). Returns `(group_key, group_source)`
+/// pairs preserving order of first appearance.
+fn split_source_by_sheet_name(
+    template: &str,
+    source: &SourceData,
+    inputs_value: &Value,
+    lists_value: &Value,
+    named_sources: &HashMap<String, Value>,
+) -> Result<Vec<(String, SourceData)>> {
+    let mut groups: Vec<(String, Vec<HashMap<String, Value>>)> = Vec::new();
+    for row in &source.rows {
+        let mut ctx: EvalContext = row.clone();
+        ctx.insert("__inputs__".to_string(), inputs_value.clone());
+        ctx.insert("__lists__".to_string(), lists_value.clone());
+        inject_named_sources(&mut ctx, named_sources);
+        let key_value = eval_cell(template, &ctx)?;
+        let raw_key = key_value.canonical();
+        // ADR-0026: an empty / whitespace-only group key is substituted
+        // with the literal `(blank)` placeholder before sheet-name
+        // interpolation. Otherwise we'd hit rust_xlsxwriter's "sheet
+        // name cannot be blank" error.
+        let key = if raw_key.chars().all(char::is_whitespace) {
+            "(blank)".to_string()
+        } else {
+            raw_key
+        };
+        if let Some(g) = groups.iter_mut().find(|g| g.0 == key) {
+            g.1.push(row.clone());
+        } else {
+            groups.push((key, vec![row.clone()]));
+        }
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(key, rows)| {
+            (
+                key,
+                SourceData {
+                    name: source.name.clone(),
+                    headers: source.headers.clone(),
+                    rows,
+                },
+            )
+        })
+        .collect())
 }
 
 fn render_sheet(

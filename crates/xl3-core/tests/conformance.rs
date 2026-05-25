@@ -431,6 +431,18 @@ fn fixture_068_input_select_host_supplied() {
 }
 
 #[test]
+fn fixture_086_sheet_group_first_seen_order() {
+    run_fixture("086-sheet-group-first-seen-order")
+        .expect("fixture 086 should pass");
+}
+
+#[test]
+fn fixture_108_group_key_empty_blank_placeholder_sheet() {
+    run_fixture("108-group-key-empty-blank-placeholder-sheet")
+        .expect("fixture 108 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }
