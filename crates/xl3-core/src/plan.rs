@@ -19,6 +19,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::calamine::{open_workbook, Data as CData, Reader, Xlsx};
 use crate::directives::{parse_directive_cell, Direction, Directive};
+use crate::styles::{self, NumFmtKind, TemplateStyles};
 use crate::value::Value;
 
 #[derive(Debug, Default, Clone)]
@@ -132,8 +133,13 @@ fn parse_a1_part(s: &str) -> Option<(Option<usize>, Option<usize>)> {
 pub enum CellSource {
     Empty,
     Literal(Value),
-    /// Contains at least one `{{ ... }}` expression block.
-    Template(String),
+    /// Contains at least one `{{ ... }}` expression block. `num_fmt`
+    /// is the classified numFmt of the underlying *template* cell,
+    /// used by ADR-0003 single-expression coercion at render time.
+    Template {
+        text: String,
+        num_fmt: NumFmtKind,
+    },
     /// `{{ @subtotal <FN>(<ColumnRef>) }}` — emitted at the end of
     /// each group when the enclosing block has a `@group` directive.
     /// `aggregate` is normalised to uppercase; `field` is the bare
@@ -146,7 +152,7 @@ pub enum CellSource {
 
 impl CellSource {
     pub fn is_template(&self) -> bool {
-        matches!(self, CellSource::Template(_))
+        matches!(self, CellSource::Template { .. })
     }
 }
 
@@ -269,6 +275,7 @@ fn template_depends_on_source_row(s: &str, named_sources_to_exclude: &[&str]) ->
 }
 
 pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
+    let styles = styles::parse_template_styles(path).unwrap_or_default();
     let mut wb: Xlsx<_> = open_workbook(path)
         .with_context(|| format!("open template workbook at {}", path.display()))?;
 
@@ -381,7 +388,14 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                             if template_depends_on_source_row(s, &exclude_named) {
                                 has_source_template = true;
                             }
-                            CellSource::Template(s.clone())
+                            let num_fmt = styles
+                                .format_code(&name, r as u32, c as u32)
+                                .map(|s| styles::classify_num_fmt(&s))
+                                .unwrap_or(NumFmtKind::General);
+                            CellSource::Template {
+                                text: s.clone(),
+                                num_fmt,
+                            }
                         }
                     }
                     Some(other) => {

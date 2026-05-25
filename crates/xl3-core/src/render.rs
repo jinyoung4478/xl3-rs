@@ -20,6 +20,7 @@ use crate::plan::{
     inputs_to_value, lists_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
 };
 use crate::source::{CalamineSourceReader, SourceData, SourceReader};
+use crate::styles::NumFmtKind;
 use crate::value::Value;
 
 /// Convenience for the conformance runner: parse the template, load the
@@ -455,7 +456,9 @@ fn render_subtotal_row(
         let value = match cell {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
-            CellSource::Template(t) => eval_cell(t, &ctx)?,
+            CellSource::Template { text, num_fmt } => {
+                coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
+            }
             CellSource::Subtotal { aggregate, field } => {
                 // Build an `<FN>([<field>])` expression and run it
                 // through the evaluator — that gives us a single,
@@ -594,7 +597,7 @@ fn render_expand_right_row(
         match cell {
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
-            CellSource::Template(t) => {
+            CellSource::Template { text, num_fmt } => {
                 if emitted_expansion {
                     anyhow::bail!(
                         "multi-column @repeat right (two template cells in one expansion row) not yet supported"
@@ -608,7 +611,7 @@ fn render_expand_right_row(
                     ctx.insert("__inputs__".to_string(), inputs_value.clone());
                     ctx.insert("__lists__".to_string(), lists_value.clone());
                     inject_named_sources(&mut ctx, named_sources);
-                    out.push(eval_cell(t, &ctx)?);
+                    out.push(coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt));
                 }
             }
             CellSource::Subtotal { .. } => {
@@ -642,7 +645,9 @@ fn render_static_row(
         let value = match c {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
-            CellSource::Template(t) => eval_cell(t, &ctx)?,
+            CellSource::Template { text, num_fmt } => {
+                coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
+            }
             CellSource::Subtotal { .. } => Value::Empty,
         };
         out.push(value);
@@ -656,9 +661,106 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
         match cell {
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
-            CellSource::Template(t) => out.push(eval_cell(t, ctx)?),
+            CellSource::Template { text, num_fmt } => {
+                out.push(coerce_for_num_fmt(eval_cell(text, ctx)?, *num_fmt))
+            }
             CellSource::Subtotal { .. } => out.push(Value::Empty),
         }
     }
     Ok(out)
+}
+
+/// Apply ADR-0003 single-expression cell coercion driven by the
+/// template cell's numFmt classification:
+/// - numeric format + string value → parse to Number (fallback: keep
+///   the string)
+/// - date format + ISO-style date string → Excel serial Number
+/// - text format (`@`) + Number → canonical string
+fn coerce_for_num_fmt(value: Value, kind: NumFmtKind) -> Value {
+    match kind {
+        NumFmtKind::Numeric => match value {
+            Value::String(s) => {
+                let trimmed = s.trim();
+                let cleaned: String = trimmed.chars().filter(|c| *c != ',').collect();
+                match cleaned.parse::<f64>() {
+                    Ok(n) => Value::Number(n),
+                    Err(_) => Value::String(s),
+                }
+            }
+            other => other,
+        },
+        NumFmtKind::Date => match value {
+            Value::String(ref s) => {
+                if let Some(serial) = parse_iso_date_to_serial(s.trim()) {
+                    Value::Number(serial)
+                } else {
+                    value
+                }
+            }
+            other => other,
+        },
+        NumFmtKind::Text => match value {
+            Value::Number(n) => Value::String(canonical_number(n)),
+            other => other,
+        },
+        NumFmtKind::General => value,
+    }
+}
+
+fn canonical_number(n: f64) -> String {
+    if n.fract() == 0.0 && n.is_finite() && n.abs() < 1e16 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+fn parse_iso_date_to_serial(s: &str) -> Option<f64> {
+    // Accept `YYYY-MM-DD` (the only date-string form xl3 emits as input).
+    let bytes = s.as_bytes();
+    if bytes.len() < 10 {
+        return None;
+    }
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let year: i32 = std::str::from_utf8(&bytes[..4]).ok()?.parse().ok()?;
+    let month: u32 = std::str::from_utf8(&bytes[5..7]).ok()?.parse().ok()?;
+    let day: u32 = std::str::from_utf8(&bytes[8..10]).ok()?.parse().ok()?;
+    // Roundtrip through functions::serial_to_iso_date by constructing
+    // the date directly. We use the DATE() builtin's serial path —
+    // exposed via a small helper here to avoid a circular dep.
+    excel_date_to_serial(year, month, day)
+}
+
+fn excel_date_to_serial(year: i32, month: u32, day: u32) -> Option<f64> {
+    // Minimal Gregorian → Excel serial (matches functions.rs internal
+    // helper, but inlined to avoid cross-module plumbing).
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let days = days_from_civil(year, month as i32, day as i32);
+    // Excel epoch: 1899-12-30 = day 0. Add the 1900-02-29 leap-day
+    // adjustment (`+1` for dates on or after 1900-03-01).
+    let epoch = days_from_civil(1899, 12, 30);
+    let mut serial = days - epoch;
+    let leap_threshold = days_from_civil(1900, 3, 1);
+    if days >= leap_threshold {
+        // already correct
+    } else if days >= days_from_civil(1900, 1, 1) {
+        serial -= 1;
+    }
+    Some(serial as f64)
+}
+
+/// Days since the proleptic Gregorian epoch (March-1, 2000-style civil
+/// algorithm — Howard Hinnant). Returns a signed count; the caller
+/// offsets by the Excel epoch.
+fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as i64;
+    let doy = ((153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1) as i64;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146097 + doe - 719468
 }

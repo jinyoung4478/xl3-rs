@@ -479,6 +479,24 @@ fn fixture_062_concat_empty_stringifies_to_empty() {
         .expect("fixture 062 should pass");
 }
 
+#[test]
+fn fixture_008_numfmt_numeric_string_coercion() {
+    run_fixture("008-numfmt-numeric-string-coercion")
+        .expect("fixture 008 should pass");
+}
+
+#[test]
+fn fixture_009_numfmt_date_string_coercion() {
+    run_fixture("009-numfmt-date-string-coercion")
+        .expect("fixture 009 should pass");
+}
+
+#[test]
+fn fixture_010_numfmt_text_format_coercion() {
+    run_fixture("010-numfmt-text-format-coercion")
+        .expect("fixture 010 should pass");
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {

@@ -21,6 +21,7 @@ pub mod output;
 pub mod plan;
 pub mod render;
 pub mod source;
+pub mod styles;
 pub mod value;
 
 pub use calamine;
