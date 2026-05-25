@@ -515,6 +515,13 @@ fn fixture_143_block_shared_formula_side_cells() {
         .expect("fixture 143 should pass");
 }
 
+#[test]
+fn debug_fixture_068() {
+    if let Err(e) = run_fixture("068-input-select-host-supplied") {
+        eprintln!("[dbg068] {e:#}");
+    }
+}
+
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {
@@ -562,7 +569,7 @@ fn fixture_corpus_overview() {
             skip_no_expected += 1;
             continue;
         }
-        match xl3_core::render::render_from_paths(&template, &data) {
+        match { let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default(); let inputs = parse_meta_inputs(&meta); xl3_core::render::render_from_paths_with_inputs(&template, &data, &inputs) } {
             Ok(bytes) => match compare_workbooks_stage1(&bytes, &expected) {
                 Ok(()) => pass += 1,
                 Err(e) => {
@@ -617,7 +624,7 @@ fn fixture_failure_taxonomy() {
         if !template.exists() || !data.exists() || !expected.exists() {
             continue;
         }
-        match xl3_core::render::render_from_paths(&template, &data) {
+        match { let meta = std::fs::read_to_string(dir.join("meta.yaml")).unwrap_or_default(); let inputs = parse_meta_inputs(&meta); xl3_core::render::render_from_paths_with_inputs(&template, &data, &inputs) } {
             Ok(bytes) => match compare_workbooks_stage1(&bytes, &expected) {
                 Ok(()) => {}
                 Err(e) => {

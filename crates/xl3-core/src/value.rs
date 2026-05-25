@@ -36,6 +36,25 @@ pub enum Value {
     List(ListHandle),
 }
 
+/// xl3 ADR-0009 / ECMA-262 §6.1.6.1.13: a number's canonical string
+/// form is decimal when its magnitude is in [1e-6, 1e21), and
+/// exponential ("xeY") below 1e-6. Integers within ±1e16 round-trip
+/// without a decimal point.
+pub fn canonical_number(n: f64) -> String {
+    if !n.is_finite() {
+        return format!("{n}");
+    }
+    if n.fract() == 0.0 && n.abs() < 1e16 {
+        return format!("{}", n as i64);
+    }
+    let abs = n.abs();
+    if abs > 0.0 && abs < 1e-6 {
+        format!("{n:e}")
+    } else {
+        format!("{n}")
+    }
+}
+
 impl Value {
     /// Canonical string form per ADR-0009 (xl3 TS `canonicalString` mirror).
     /// Used when a value is substituted into a mixed text cell — e.g.
@@ -45,13 +64,7 @@ impl Value {
         match self {
             Value::Empty => String::new(),
             Value::String(s) => s.clone(),
-            Value::Number(n) => {
-                if n.fract() == 0.0 && n.is_finite() && n.abs() < 1e16 {
-                    format!("{}", *n as i64)
-                } else {
-                    format!("{n}")
-                }
-            }
+            Value::Number(n) => canonical_number(*n),
             Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             // Internal scaffolding values — defensive empty render.
             Value::Rows(_) | Value::Map(_) | Value::List(_) => String::new(),

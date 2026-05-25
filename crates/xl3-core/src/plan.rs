@@ -555,16 +555,38 @@ pub fn parse_template(path: &Path) -> Result<WorkbookPlan> {
                     .iter()
                     .position(|h| h.eq_ignore_ascii_case("default"));
                 if let Some(default_col) = default_col {
+                    // ADR-0050: __inputs__ default values may themselves
+                    // be XTL templates that reference __config__ and
+                    // pure scalar functions. Evaluate them with a
+                    // ctx-of-config so the resulting plan holds the
+                    // already-rendered defaults.
+                    let mut input_ctx: HashMap<String, Value> = HashMap::new();
+                    let config_map: HashMap<String, Value> = config
+                        .values
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                        .collect();
+                    input_ctx
+                        .insert("__config__".to_string(), Value::Map(Arc::new(config_map)));
                     for r in 1..rows {
                         let name = match range.get((r, name_col)) {
                             Some(CData::String(s)) if !s.is_empty() => s.clone(),
                             _ => continue,
                         };
-                        let value = range
+                        let raw = range
                             .get((r, default_col))
                             .map(Value::from_calamine)
                             .unwrap_or(Value::Empty);
-                        inputs.insert(name, value);
+                        let evaluated = if let Value::String(s) = &raw {
+                            if s.contains("{{") {
+                                crate::eval::eval_cell(s, &input_ctx).unwrap_or(raw.clone())
+                            } else {
+                                raw
+                            }
+                        } else {
+                            raw
+                        };
+                        inputs.insert(name, evaluated);
                     }
                 }
             }

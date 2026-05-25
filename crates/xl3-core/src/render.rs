@@ -541,7 +541,31 @@ fn apply_directives(
     named_sources: &HashMap<String, Value>,
 ) -> Result<Vec<HashMap<String, Value>>> {
     let mut current: Vec<HashMap<String, Value>> = rows.to_vec();
-    for d in directives {
+    // xl3 ADR-0016 multi-sort priority: directives appear in priority
+    // order (first = primary, last = least). We stably sort by the
+    // *least* priority field first and let later (= higher priority)
+    // sorts preserve the existing order for equal keys.
+    let mut ordered: Vec<&Directive> = directives.iter().collect();
+    {
+        let sort_positions: Vec<usize> = ordered
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| matches!(d, Directive::Sort { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        if sort_positions.len() > 1 {
+            // Reverse the order of Sort directives in `ordered`, keeping
+            // every other directive at its original position.
+            let mut reversed = sort_positions.clone();
+            reversed.reverse();
+            let originals: Vec<&Directive> =
+                sort_positions.iter().map(|&i| ordered[i]).collect();
+            for (slot, src) in reversed.iter().zip(originals.iter()) {
+                ordered[*slot] = *src;
+            }
+        }
+    }
+    for d in ordered {
         match d {
             Directive::Filter(expr) => {
                 let mut kept = Vec::with_capacity(current.len());
@@ -758,11 +782,7 @@ fn coerce_for_num_fmt(value: Value, kind: NumFmtKind) -> Value {
 }
 
 fn canonical_number(n: f64) -> String {
-    if n.fract() == 0.0 && n.is_finite() && n.abs() < 1e16 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
-    }
+    crate::value::canonical_number(n)
 }
 
 fn parse_iso_date_to_serial(s: &str) -> Option<f64> {
