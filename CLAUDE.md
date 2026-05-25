@@ -33,14 +33,23 @@
 
 ## 현재 상태
 
-**Phase**: Pre-implementation (계획만 수립됨)
-**다음 작업**: Phase 0 — Feasibility 검증
-  1. Rust toolchain 셋업 (rustup, cargo workspace 초기화)
-  2. `crates/xl3-core` 스켈레톤 (calamine + rust_xlsxwriter 의존 추가)
-  3. 70MB 현대차 메뉴 파일 (`/Users/wefun/workspaces/ax-tf/admin-excel-converter/assets/2026.현대차 간식서비스 메뉴(우린_양재)_26년 3월.xlsx`) 의 Rust native 라운드트립 측정
-  4. wasm-pack 빌드 후 브라우저 측정 (boundary 비용 분리)
+**Phase**: Phase 2 진행 중 (Task 2.1 + 2.4 완료 / Task 2.2 + 2.3 미진행)
 
-상세는 PLAN.md §5 Phase 0 / §9 첫 행동.
+완료:
+- **Phase 0** — Feasibility 검증 (native 3.23s / WASM warm 1.78× / 번들 1.3MB)
+- **Phase 1** — xl3-core stage-1 conformance 99/99 (P1-A ~ P1-V)
+- **Phase 2 Task 2.1** — xl3-wasm `convert` / `readTemplateInputs` / `preview` 진입점 + bytes API (1.6MB raw / 0.70MB gz)
+- **Phase 2 Task 2.4** — xl3 (TS) 에 `engine: 'auto' | 'wasm' | 'js'` 옵션, optional wasm import + 자동 폴백 (xl3 TS 207/207 tests)
+- **부가** P2-A~H — multi-file API, preview/inputs, XtlError, runner 확장, cross-impl bench, numFmt 출력, hash @join (528ms→28ms), file-group splitting
+
+남은 작업:
+- **Phase 2 Task 2.2** — TS 측 매니페스트 추출 (스타일 보존 위해 — 외부 레포 xl3)
+- **Phase 2 Task 2.3** — Web Worker 통합 (외부 레포 xl3)
+- **Phase 3 Task 3.1** — 데모 페이지
+- **Phase 3 Task 3.2** — Conformance 가속 경로 검증 (xl3 conformance fixture 를 engine='wasm' 으로 통과 확인)
+- **Phase 3 Task 3.3** — 추가 번들 최적화 (현재 0.70MB gz, KPI 통과)
+
+상세는 PLAN.md §5.
 
 ---
 

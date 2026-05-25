@@ -27,3 +27,10 @@ console_error_panic_hook = { version = "0.1", optional = true }
 [features]
 default = []
 debug = ["console_error_panic_hook"]
+
+# wasm-pack invokes wasm-opt with these flags after Rust compilation —
+# `-Oz` trades a small slice of speed for the smallest possible binary,
+# the right call for a browser-distributed artifact (PLAN.md §5
+# Phase 3 Task 3.3, target <2 MB).
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz', '--strip-debug', '--vacuum']
