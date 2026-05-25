@@ -299,6 +299,11 @@ fn fixture_075_xlookup_fallback() {
 }
 
 #[test]
+fn fixture_125_hyperlink_function() {
+    run_fixture("125-hyperlink-function").expect("fixture 125 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

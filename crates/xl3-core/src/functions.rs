@@ -85,6 +85,17 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
             }
             Ok(Value::String(s))
         }
+        "HYPERLINK" => {
+            if args.is_empty() || args.len() > 2 {
+                bail!("HYPERLINK expects 1 or 2 arguments");
+            }
+            // Stage-1 conformance (cell-value comparison) only needs
+            // the display label (arg 2, falling back to the URL when
+            // unset). xl3's `XtlHyperlinkCell` marker — which adds the
+            // actual link record to the output cell — is a Stage-2
+            // concern; revisit when manifest preservation lands.
+            Ok(args.last().cloned().unwrap_or(Value::Empty))
+        }
         "ISBLANK" => {
             if args.len() != 1 {
                 bail!("ISBLANK expects 1 argument, got {}", args.len());
