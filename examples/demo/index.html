@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>xl3-rs — Phase 3 demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    margin: 2rem auto;
+    max-width: 720px;
+    padding: 0 1rem;
+    line-height: 1.5;
+  }
+  h1 { margin-top: 0; }
+  .scenario {
+    border: 1px solid color-mix(in oklch, currentColor 20%, transparent);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  button {
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
+    border-radius: 6px;
+    border: 1px solid color-mix(in oklch, currentColor 30%, transparent);
+    background: transparent;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: progress; }
+  .result { font-variant-numeric: tabular-nums; }
+  .result strong { font-size: 1.4em; }
+  .log {
+    margin-top: 0.5rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85em;
+    opacity: 0.7;
+    white-space: pre-wrap;
+  }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>xl3-rs demo</h1>
+<p>
+  Renders the same three benchmark scenarios as
+  <code>crates/xl3-core/examples/bench.rs</code>, but through the
+  WebAssembly artifact loaded into a <strong>Web Worker</strong>
+  — the main thread stays interactive throughout. The data and
+  template workbooks are generated in JS using xl3 (TS) +
+  <a href="https://github.com/exceljs/exceljs">exceljs</a> so this
+  page has no fixture dependency.
+</p>
+<p>
+  Tap a button to drive one scenario; the worker reports the median
+  of three runs back to the UI. xl3 (TS) baseline shown for reference.
+</p>
+
+<div class="scenario" id="wide-flat">
+  <h2>wide-flat (10k rows × 4 cols)</h2>
+  <button data-scenario="wide-flat">Run</button>
+  <div class="result"><strong>—</strong> ms (TS baseline ~220 ms)</div>
+  <div class="log"></div>
+</div>
+
+<div class="scenario" id="multi-sheet">
+  <h2>multi-sheet (5k rows × 5 sheets)</h2>
+  <button data-scenario="multi-sheet">Run</button>
+  <div class="result"><strong>—</strong> ms (TS baseline ~70 ms)</div>
+  <div class="log"></div>
+</div>
+
+<div class="scenario" id="multi-source-join">
+  <h2>multi-source-join (5k × 1k)</h2>
+  <button data-scenario="multi-source-join">Run</button>
+  <div class="result"><strong>—</strong> ms (TS baseline ~70 ms)</div>
+  <div class="log"></div>
+</div>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>
