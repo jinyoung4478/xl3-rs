@@ -449,6 +449,12 @@ fn fixture_092_composed_multi_source_join_filter_sort() {
 }
 
 #[test]
+fn fixture_121_source_merged_header() {
+    run_fixture("121-source-merged-header").expect("fixture 121 should pass");
+}
+
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

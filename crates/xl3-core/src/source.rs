@@ -86,6 +86,14 @@ pub fn is_blank_value(v: &Value) -> bool {
 
 impl SourceReader for CalamineSourceReader {
     fn read(&mut self, sheet: &str, table: &SourceTable) -> Result<SourceData> {
+        // Pull merge information *before* worksheet_range so the two
+        // `&mut self.workbook` borrows don't overlap.
+        let header_merges = self
+            .workbook
+            .worksheet_merge_cells(sheet)
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+
         let range = self
             .workbook
             .worksheet_range(sheet)
@@ -148,14 +156,34 @@ impl SourceReader for CalamineSourceReader {
             ));
         }
 
+        // Map each header-row column that starts a horizontal merge to
+        // the end column of its merge run (ADR-0033). Vertical merges
+        // and merges on other rows are ignored — only horizontal
+        // header merges affect the "logical column" mapping.
+        let merge_master_to_end: HashMap<usize, usize> = header_merges
+            .iter()
+            .filter(|d| d.start.0 as usize == header_row && d.start.0 == d.end.0)
+            .map(|d| (d.start.1 as usize, d.end.1 as usize))
+            .collect();
+
         // Header span: cells in (header_row, col_first..col_last_excl)
-        // up until the first blank — xl3 treats the header as a
-        // contiguous run.
+        // up until the first blank. A merged-header master claims its
+        // whole run as one logical column.
         let mut headers: Vec<String> = Vec::new();
-        for c in col_first..col_last_excl {
+        let mut header_cols: Vec<usize> = Vec::new();
+        let mut c = col_first;
+        while c < col_last_excl {
             let cell = range.get_value((header_row as u32, c as u32));
             match cell {
-                Some(CData::String(s)) if !s.is_empty() => headers.push(s.clone()),
+                Some(CData::String(s)) if !s.is_empty() => {
+                    headers.push(s.clone());
+                    header_cols.push(c);
+                    if let Some(&end) = merge_master_to_end.get(&c) {
+                        c = end + 1;
+                    } else {
+                        c += 1;
+                    }
+                }
                 None | Some(CData::Empty) => break,
                 Some(other) => {
                     bail!(
@@ -174,7 +202,7 @@ impl SourceReader for CalamineSourceReader {
             let mut record = HashMap::with_capacity(headers.len());
             let mut row_blank = true;
             for (i, header) in headers.iter().enumerate() {
-                let c = col_first + i;
+                let c = header_cols[i];
                 let v = range
                     .get_value((r as u32, c as u32))
                     .map(Value::from_calamine)

@@ -264,9 +264,17 @@ fn tokenize(input: &str) -> Result<Vec<Tok>> {
                     .map_err(|e| anyhow!("invalid number literal {s:?}: {e}"))?;
                 out.push(Tok::Number(n));
             }
-            b if b.is_ascii_alphabetic() || b == b'_' => {
+            b if b.is_ascii_alphabetic() || b == b'_' || b >= 0x80 => {
+                // Allow ASCII identifiers AND UTF-8 multi-byte sequences
+                // (Korean / CJK / Cyrillic column names). Multi-byte
+                // bytes are always >= 0x80 so a simple byte-level check
+                // is sufficient.
                 let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric()
+                        || bytes[i] == b'_'
+                        || bytes[i] >= 0x80)
+                {
                     i += 1;
                 }
                 let s = std::str::from_utf8(&bytes[start..i])
