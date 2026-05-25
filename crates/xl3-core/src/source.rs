@@ -46,11 +46,16 @@ impl CalamineSourceReader {
     }
 }
 
-/// True if a value should be treated as blank by the source reader.
+/// True if a value should be treated as blank.
 /// Matches xl3's ADR-0007: explicit `Empty` plus strings that contain
 /// only whitespace. Other types — numbers (including 0), booleans
 /// (including `false`) — are NOT blank.
-fn is_blank_value(v: &Value) -> bool {
+///
+/// Used by:
+/// - source reader (skip blank rows)
+/// - `COUNT([Field])` row aggregate (only non-blank values count)
+/// - any future code that needs the same notion of "missing data"
+pub fn is_blank_value(v: &Value) -> bool {
     match v {
         Value::Empty => true,
         Value::String(s) => s.chars().all(|c| c.is_whitespace()),

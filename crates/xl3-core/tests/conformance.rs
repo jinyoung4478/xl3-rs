@@ -251,6 +251,17 @@ fn fixture_029_source_table_open_range() {
 }
 
 #[test]
+fn fixture_046_count_field_non_empty() {
+    run_fixture("046-count-field-non-empty").expect("fixture 046 should pass");
+}
+
+#[test]
+fn fixture_052_empty_count_field_whitespace_zero_false() {
+    run_fixture("052-empty-count-field-whitespace-zero-false")
+        .expect("fixture 052 should pass");
+}
+
+#[test]
 fn fixture_005_round_half_away_from_zero() {
     run_fixture("005-round-half-away-from-zero").expect("fixture 005 should pass");
 }

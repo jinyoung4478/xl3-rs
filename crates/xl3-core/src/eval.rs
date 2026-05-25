@@ -655,7 +655,7 @@ fn aggregate_over_field(name: &str, rows: &RowsHandle, field: &str) -> Result<Va
             let mut n = 0usize;
             for r in rows.iter() {
                 if let Some(v) = r.get(field) {
-                    if !matches!(v, Value::Empty) {
+                    if !crate::source::is_blank_value(v) {
                         n += 1;
                     }
                 }
