@@ -515,7 +515,28 @@ fn fixture_143_block_shared_formula_side_cells() {
         .expect("fixture 143 should pass");
 }
 
+#[test]
+fn fixture_084_sort_multi_stable_priority() {
+    run_fixture("084-sort-multi-stable-priority")
+        .expect("fixture 084 should pass");
+}
 
+#[test]
+fn fixture_096_canonical_number_scientific_boundary() {
+    run_fixture("096-canonical-number-scientific-boundary")
+        .expect("fixture 096 should pass");
+}
+
+#[test]
+fn fixture_131_inputs_with_xtl_default() {
+    run_fixture("131-inputs-with-xtl-default").expect("fixture 131 should pass");
+}
+
+#[test]
+fn fixture_087_date_canonical_string_concat() {
+    run_fixture("087-date-canonical-string-concat")
+        .expect("fixture 087 should pass");
+}
 
 #[test]
 fn fixture_005_round_half_away_from_zero() {

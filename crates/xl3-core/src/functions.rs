@@ -303,9 +303,12 @@ fn is_empty_for_ifempty(v: &Value) -> bool {
         // empty for IFEMPTY. Numbers and booleans (including 0 / false)
         // are explicitly NOT empty.
         Value::String(s) => s.chars().all(|c| c.is_ascii_whitespace()),
-        Value::Number(_) | Value::Bool(_) | Value::Rows(_) | Value::Map(_) | Value::List(_) => {
-            false
-        }
+        Value::Number(_)
+        | Value::DateNumber(_)
+        | Value::Bool(_)
+        | Value::Rows(_)
+        | Value::Map(_)
+        | Value::List(_) => false,
     }
 }
 
@@ -385,7 +388,12 @@ fn excel_serial_to_datetime(serial: f64) -> Result<ExcelDateTime> {
     }
 
     let mut whole = serial.floor() as i64;
-    let mut seconds = ((serial - serial.floor()) * SECONDS_PER_DAY + 0.0000001).floor() as i64;
+    // Round, not floor: a serial like 46150.39583333333 corresponds to
+    // 09:30:00 exactly, but its fractional part times 86400 is
+    // 34199.9999997… due to f64 precision. Floor + tiny epsilon would
+    // bias toward truncation; `.round()` lands on 34200 (= 09:30:00).
+    let mut seconds =
+        ((serial - serial.floor()) * SECONDS_PER_DAY).round() as i64;
     if seconds >= SECONDS_PER_DAY as i64 {
         whole += 1;
         seconds -= SECONDS_PER_DAY as i64;

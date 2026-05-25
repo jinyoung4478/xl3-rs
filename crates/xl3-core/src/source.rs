@@ -263,12 +263,28 @@ impl SourceReader for CalamineSourceReader {
             let mut row_blank = true;
             for (i, header) in headers.iter().enumerate() {
                 let c = header_cols[i];
-                let v = cell_at(r, c)
+                let raw = cell_at(r, c)
                     .map(Value::from_calamine)
                     .unwrap_or(Value::Empty);
-                let _ = (&styles, sheet);
-                // (ADR-0017 source-side date canonicalisation needs a
-                // first-class Value::DateNumber variant — deferred.)
+                // ADR-0017: a numeric source cell whose style is a date
+                // numFmt becomes Value::DateNumber. Arithmetic and
+                // comparison treat it like Number; only `canonical()`
+                // (used by string concat) renders the ISO form.
+                let v = match &raw {
+                    Value::Number(n) => {
+                        let kind = styles
+                            .format_code(sheet, r as u32, c as u32)
+                            .as_deref()
+                            .map(styles::classify_num_fmt)
+                            .unwrap_or(NumFmtKind::General);
+                        if kind == NumFmtKind::Date {
+                            Value::DateNumber(*n)
+                        } else {
+                            raw
+                        }
+                    }
+                    _ => raw,
+                };
                 if !is_blank_value(&v) {
                     row_blank = false;
                 }

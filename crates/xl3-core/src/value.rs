@@ -25,6 +25,13 @@ pub enum Value {
     String(String),
     Number(f64),
     Bool(bool),
+    /// An Excel serial number whose source cell carried a date /
+    /// datetime numFmt. Behaves like `Number` for arithmetic and
+    /// numeric comparison; its canonical string form is the ISO
+    /// `YYYY-MM-DD` / `YYYY-MM-DDTHH:MM:SS` representation per
+    /// ADR-0017. Output cells write the raw serial — the format is
+    /// reapplied by the consuming spreadsheet.
+    DateNumber(f64),
     /// All source rows visible to the active expansion block. Used for
     /// row aggregates. Not emitted as a cell value.
     Rows(RowsHandle),
@@ -65,6 +72,8 @@ impl Value {
             Value::Empty => String::new(),
             Value::String(s) => s.clone(),
             Value::Number(n) => canonical_number(*n),
+            Value::DateNumber(n) => crate::functions::serial_to_iso_canonical(*n)
+                .unwrap_or_else(|| canonical_number(*n)),
             Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             // Internal scaffolding values — defensive empty render.
             Value::Rows(_) | Value::Map(_) | Value::List(_) => String::new(),

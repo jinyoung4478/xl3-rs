@@ -833,7 +833,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 
 pub(crate) fn coerce_number(v: &Value) -> Result<f64> {
     match v {
-        Value::Number(n) => Ok(*n),
+        Value::Number(n) | Value::DateNumber(n) => Ok(*n),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         Value::Empty => Ok(0.0),
         Value::String(s) => {
@@ -864,7 +864,7 @@ pub fn is_truthy(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
         Value::Empty => false,
-        Value::Number(n) => *n != 0.0,
+        Value::Number(n) | Value::DateNumber(n) => *n != 0.0,
         // xl3 ADR-0007/0008: whitespace-only strings are blank → falsy.
         // Same rule as `is_blank_value` (source-row skip / COUNT /
         // ISBLANK).

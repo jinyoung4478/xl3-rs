@@ -30,7 +30,7 @@ pub fn write_workbook(sheets: &[RenderedSheet]) -> Result<Vec<u8>> {
                     Value::String(s) => {
                         ws.write_string(r32, c16, s)?;
                     }
-                    Value::Number(n) => {
+                    Value::Number(n) | Value::DateNumber(n) => {
                         ws.write_number(r32, c16, *n)?;
                     }
                     Value::Bool(b) => {
