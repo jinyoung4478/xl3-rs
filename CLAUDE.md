@@ -33,7 +33,7 @@
 
 ## 현재 상태
 
-**Phase**: Phase 2 + Phase 3 코어 인프라 완료. 잔여는 외부 검증.
+**Phase**: Phase 2 + Phase 3 코어 인프라 완료. 외부 검증 + 라이브러리화 1차 마무리.
 
 완료:
 - **Phase 0** — Feasibility 검증 (native 3.23s / WASM warm 1.78× / 번들 1.3MB)
@@ -45,12 +45,19 @@
 - **Phase 3 Task 3.1** — 브라우저 데모 (examples/demo, Web Worker + 3 시나리오)
 - **Phase 3 Task 3.2** — conformance 가속 경로 인프라 (xl3 conformance-runner `--engine=wasm` flag)
 - **Phase 3 Task 3.3** — 번들 최적화 (wasm-opt -Oz pin, 0.71 MB gz, KPI <2 MB 통과)
+- **외부 검증 4건** (2026-05-26) — conformance 측정 (110/148→119/148), 매니페스트 stage 2 진단, 70MB 재측정 (퇴행 없음), 300 회 메모리 안정
+- **Native formula preservation** (2026-05-26) — ADR-0021/0046. 097, 129, 142, 144 통과. `CellSource::CellFormula` 추가, calamine `worksheet_formula` 연동, iteration bounds 합집합, col_range 인접 확장
+- **Error code 인프라** (2026-05-26) — `XtlError { code }` propagation 완성. arity / xlookup 코드 정착, wasm-bridge 가 `[xl3/...]` prefix → JS Error `.code` 변환
+- **xl3-core 0.1.0 release 준비** (2026-05-26) — Cargo.toml 메타 (description/keywords/categories/readme), README, CHANGELOG, lib.rs doc
 - **부가** P2-A~H — multi-file API, preview/inputs, XtlError, runner 확장, cross-impl bench, numFmt 출력, hash @join (528ms→28ms), file-group splitting
 
+**현재 conformance**: `--engine=wasm` 119/148 (js baseline 148/148) — 79.7%.
+
 남은 검증:
-- 실제 `--engine=wasm` conformance 통과 측정 (xl3-wasm 패키지 install 후 — `npm install ../xl3-rs/crates/xl3-wasm/pkg` 또는 publish)
-- 매니페스트 apply 의 fixture-기반 검증 (현재는 hand-built manifest unit test 만)
-- 추가 스타일 (border, conditional formatting 일부) — incremental
+- 추가 에러 코드 sites (~20 fixtures) — incremental 0.x 작업
+- HYPERLINK 함수 / shared formula — 별도 기능
+- Border / CF / DV / defined names manifest — incremental
+- crates.io 실제 publish (메타 준비됨)
 
 상세는 PLAN.md §5.
 

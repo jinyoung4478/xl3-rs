@@ -57,6 +57,13 @@ console.error('---');
 const t_mod_start = performance.now();
 const wasmModulePath = resolve(repoRoot, 'crates/xl3-wasm/pkg/xl3_wasm.js');
 const wasm = await import(wasmModulePath);
+if (typeof wasm.default === 'function') {
+  // wasm-pack web target — in Node we feed the .wasm bytes manually
+  // since fetch(file://) is unsupported. The browser path works
+  // because the demo bundler / page serves the asset over http.
+  const wasmBytes = await readFile(resolve(repoRoot, 'crates/xl3-wasm/pkg/xl3_wasm_bg.wasm'));
+  await wasm.default({ module_or_path: wasmBytes });
+}
 const t_mod_ms = performance.now() - t_mod_start;
 console.error(`module load+instantiate : ${fmt(t_mod_ms)}  rss=${rssMb()} MB`);
 
