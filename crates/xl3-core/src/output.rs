@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use anyhow::Result;
 
 use crate::manifest::{
-    AlignmentSpec, FillSpec, FontSpec, HorizontalAlign, StyleManifest, StyleSpec, VerticalAlign,
+    AlignmentSpec, FillSpec, FontSpec, HorizontalAlign, StyleSpec, VerticalAlign,
 };
-use crate::rust_xlsxwriter::{Color, Format, FormatAlign, Workbook};
+use crate::rust_xlsxwriter::{Color, Format, FormatAlign, Formula, Workbook};
 use crate::value::Value;
 
 #[derive(Debug, Clone)]
@@ -31,6 +31,12 @@ pub struct RenderedSheet {
     /// shape to `rows`. Empty when the host didn't pass a manifest;
     /// `None` entries mean the template cell wasn't styled.
     pub style_indices: Vec<Vec<Option<usize>>>,
+    /// Per-cell native Excel formula text (without leading `=`).
+    /// Parallel shape to `rows`. When present, the writer emits
+    /// `write_formula(_with_format)` and uses the parallel value as
+    /// the cached result; absent means a plain value write. ADR-0021
+    /// (static cell) / ADR-0046 (cloned-per-row inside expansion).
+    pub formulas: Vec<Vec<Option<String>>>,
 }
 
 pub fn write_workbook(sheets: &[RenderedSheet]) -> Result<Vec<u8>> {
@@ -106,6 +112,32 @@ pub fn write_workbook_with_manifest(
                     }
                 }
                 let fmt: Option<&Format> = cache_key.as_deref().and_then(|k| formats.get(k));
+                // Native Excel formula path (ADR-0021 / ADR-0046):
+                // when the planner attached a formula to this cell,
+                // round-trip the formula text and stamp the parallel
+                // `value` as the cached result so Stage 1 readers see
+                // the same numeric/text answer until Excel recalcs.
+                let formula: Option<&str> = sheet
+                    .formulas
+                    .get(r)
+                    .and_then(|fr| fr.get(c))
+                    .and_then(|f| f.as_deref());
+                if let Some(formula_text) = formula {
+                    let cached_result = match value {
+                        Value::Empty => String::new(),
+                        Value::String(s) => s.clone(),
+                        Value::Number(n) | Value::DateNumber(n) => crate::value::canonical_number(*n),
+                        Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+                        Value::Rows(_) | Value::Map(_) | Value::List(_) => String::new(),
+                    };
+                    let f = Formula::new(formula_text).set_result(cached_result);
+                    if let Some(format) = fmt {
+                        ws.write_formula_with_format(r32, c16, f, format)?;
+                    } else {
+                        ws.write_formula(r32, c16, f)?;
+                    }
+                    continue;
+                }
                 match (value, fmt) {
                     // An empty cell with a style still needs an xf
                     // attached so the recipient sees the format

@@ -15,7 +15,7 @@ use crate::directives::Directive;
 use crate::eval::{
     compare, eval_cell, eval_expression_str, inject_rownum, inject_rows, is_truthy, EvalContext,
 };
-use crate::output::{write_workbook, write_workbook_with_manifest, RenderedSheet};
+use crate::output::{write_workbook_with_manifest, RenderedSheet};
 use crate::output_model::{OutputFile, XtlWarning};
 use crate::plan::{
     inputs_to_value, lists_to_value, parse_template, CellSource, RowPlan, SheetPlan, WorkbookPlan,
@@ -437,6 +437,7 @@ fn render_sheet(
             Vec<Vec<Value>>,
             Vec<Vec<Option<String>>>,
             Vec<Vec<Option<usize>>>,
+            Vec<Vec<Option<String>>>,
         )> = Vec::new();
         for sub in &plan.sub_blocks {
             let sub_plan = SheetPlan {
@@ -459,11 +460,12 @@ fn render_sheet(
                 sub_rendered.rows,
                 sub_rendered.formats,
                 sub_rendered.style_indices,
+                sub_rendered.formulas,
             ));
         }
         let max_rows = sub_outputs
             .iter()
-            .map(|(_, _, r, _, _)| r.len())
+            .map(|(_, _, r, _, _, _)| r.len())
             .max()
             .unwrap_or(0);
         let n_cols = plan.n_cols.max(1);
@@ -476,7 +478,10 @@ fn render_sheet(
         let mut merged_style_indices: Vec<Vec<Option<usize>>> = (0..max_rows)
             .map(|_| vec![None; n_cols])
             .collect();
-        for (col_first, _col_last, sub_rows, sub_formats, sub_styles) in sub_outputs {
+        let mut merged_formulas: Vec<Vec<Option<String>>> = (0..max_rows)
+            .map(|_| vec![None; n_cols])
+            .collect();
+        for (col_first, _col_last, sub_rows, sub_formats, sub_styles, sub_formulas) in sub_outputs {
             for (r_idx, sub_row) in sub_rows.iter().enumerate() {
                 for (c_off, v) in sub_row.iter().enumerate() {
                     let c = col_first + c_off;
@@ -500,6 +505,14 @@ fn render_sheet(
                         }
                     }
                 }
+                if let Some(sub_fl) = sub_formulas.get(r_idx) {
+                    for (c_off, f) in sub_fl.iter().enumerate() {
+                        let c = col_first + c_off;
+                        if c < n_cols {
+                            merged_formulas[r_idx][c] = f.clone();
+                        }
+                    }
+                }
             }
         }
         return Ok(RenderedSheet {
@@ -507,12 +520,14 @@ fn render_sheet(
             rows: merged,
             formats: merged_formats,
             style_indices: merged_style_indices,
+            formulas: merged_formulas,
         });
     }
 
     let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut formats: Vec<Vec<Option<String>>> = Vec::new();
     let mut style_indices: Vec<Vec<Option<usize>>> = Vec::new();
+    let mut formulas: Vec<Vec<Option<String>>> = Vec::new();
     for row in &plan.rows {
         match row {
             RowPlan::Static(cells) => {
@@ -525,6 +540,7 @@ fn render_sheet(
                 )?);
                 formats.push(row_formats(cells));
                 style_indices.push(row_style_indices(cells));
+                formulas.push(row_formulas(cells));
             }
             RowPlan::ExpandDown {
                 cells,
@@ -556,6 +572,7 @@ fn render_sheet(
                      rows: &mut Vec<Vec<Value>>,
                      formats: &mut Vec<Vec<Option<String>>>,
                      style_indices: &mut Vec<Vec<Option<usize>>>,
+                     formulas: &mut Vec<Vec<Option<String>>>,
                      global_idx: &mut usize|
                      -> Result<()> {
                         for (iter_idx, source_row) in group_rows.iter().enumerate() {
@@ -578,6 +595,7 @@ fn render_sheet(
                             rows.push(render_template_row(&effective_cells, &ctx)?);
                             formats.push(row_formats(&effective_cells));
                             style_indices.push(row_style_indices(&effective_cells));
+                            formulas.push(row_formulas(&effective_cells));
                         }
                         Ok(())
                     };
@@ -588,6 +606,7 @@ fn render_sheet(
                         &mut rows,
                         &mut formats,
                         &mut style_indices,
+                        &mut formulas,
                         &mut global_idx,
                     )?;
                     let consumed = effective.len().saturating_sub(1);
@@ -602,6 +621,7 @@ fn render_sheet(
                             )?);
                             formats.push(row_formats(extra));
                             style_indices.push(row_style_indices(extra));
+                            formulas.push(row_formulas(extra));
                         }
                     }
                     for subtotal_cells in subtotal_rows {
@@ -614,6 +634,7 @@ fn render_sheet(
                         )?);
                         formats.push(row_formats(subtotal_cells));
                         style_indices.push(row_style_indices(subtotal_cells));
+                        formulas.push(row_formulas(subtotal_cells));
                     }
                 } else {
                     render_grouped(
@@ -627,6 +648,7 @@ fn render_sheet(
                         &mut rows,
                         &mut formats,
                         &mut style_indices,
+                        &mut formulas,
                         &mut global_idx,
                         &rows_handle,
                         inputs_value,
@@ -649,6 +671,7 @@ fn render_sheet(
                 formats.push(row_formats_for_expand_right(cells, effective.len()));
                 style_indices
                     .push(row_style_indices_for_expand_right(cells, effective.len()));
+                formulas.push(row_formulas_for_expand_right(cells, effective.len()));
             }
         }
     }
@@ -657,6 +680,7 @@ fn render_sheet(
         rows,
         formats,
         style_indices,
+        formulas,
     })
 }
 
@@ -674,6 +698,24 @@ fn row_formats_for_expand_right(cells: &[CellSource], n_iters: usize) -> Vec<Opt
                 }
             }
             _ => out.push(cell_format(cell)),
+        }
+    }
+    out
+}
+
+/// Mirror of `row_formats_for_expand_right` for the parallel formula
+/// channel. A Template cell isn't a native formula, so it always emits
+/// `None` regardless of iteration count.
+fn row_formulas_for_expand_right(cells: &[CellSource], n_iters: usize) -> Vec<Option<String>> {
+    let mut out = Vec::with_capacity(cells.len() + n_iters);
+    for cell in cells {
+        match cell {
+            CellSource::Template { .. } => {
+                for _ in 0..n_iters {
+                    out.push(None);
+                }
+            }
+            _ => out.push(cell_formula(cell)),
         }
     }
     out
@@ -750,6 +792,7 @@ fn render_grouped(
     out_rows: &mut Vec<Vec<Value>>,
     out_formats: &mut Vec<Vec<Option<String>>>,
     out_style_indices: &mut Vec<Vec<Option<usize>>>,
+    out_formulas: &mut Vec<Vec<Option<String>>>,
     global_idx: &mut usize,
     rows_handle: &Arc<Vec<HashMap<String, Value>>>,
     inputs_value: &Value,
@@ -774,6 +817,7 @@ fn render_grouped(
             out_rows.push(render_template_row(&effective_cells, &ctx)?);
             out_formats.push(row_formats(&effective_cells));
             out_style_indices.push(row_style_indices(&effective_cells));
+            out_formulas.push(row_formulas(&effective_cells));
         }
         return Ok(());
     }
@@ -790,6 +834,7 @@ fn render_grouped(
             out_rows,
             out_formats,
             out_style_indices,
+            out_formulas,
             global_idx,
             rows_handle,
             inputs_value,
@@ -809,6 +854,7 @@ fn render_grouped(
             )?);
             out_formats.push(row_formats(&subtotal_rows[slot]));
             out_style_indices.push(row_style_indices(&subtotal_rows[slot]));
+            out_formulas.push(row_formulas(&subtotal_rows[slot]));
         }
     }
     Ok(())
@@ -835,6 +881,7 @@ fn render_subtotal_row(
         let value = match cell {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
+            CellSource::CellFormula { cached, .. } => cached.clone(),
             CellSource::Template { text, num_fmt, .. } => {
                 coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
             }
@@ -1069,6 +1116,7 @@ fn render_expand_right_row(
         match cell {
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
+            CellSource::CellFormula { cached, .. } => out.push(cached.clone()),
             CellSource::Template { text, num_fmt, .. } => {
                 if emitted_expansion {
                     anyhow::bail!(
@@ -1103,6 +1151,7 @@ fn render_expand_right_row(
 fn cell_format(cell: &CellSource) -> Option<String> {
     match cell {
         CellSource::Template { format_code, .. } => format_code.clone(),
+        CellSource::CellFormula { format_code, .. } => format_code.clone(),
         _ => None,
     }
 }
@@ -1110,6 +1159,14 @@ fn cell_format(cell: &CellSource) -> Option<String> {
 fn cell_style_idx(cell: &CellSource) -> Option<usize> {
     match cell {
         CellSource::Template { style_idx, .. } => *style_idx,
+        CellSource::CellFormula { style_idx, .. } => *style_idx,
+        _ => None,
+    }
+}
+
+fn cell_formula(cell: &CellSource) -> Option<String> {
+    match cell {
+        CellSource::CellFormula { text, .. } => Some(text.clone()),
         _ => None,
     }
 }
@@ -1120,6 +1177,10 @@ fn row_formats(cells: &[CellSource]) -> Vec<Option<String>> {
 
 fn row_style_indices(cells: &[CellSource]) -> Vec<Option<usize>> {
     cells.iter().map(cell_style_idx).collect()
+}
+
+fn row_formulas(cells: &[CellSource]) -> Vec<Option<String>> {
+    cells.iter().map(cell_formula).collect()
 }
 
 fn row_style_indices_for_expand_right(
@@ -1164,6 +1225,7 @@ fn render_static_row(
         let value = match c {
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
+            CellSource::CellFormula { cached, .. } => cached.clone(),
             CellSource::Template { text, num_fmt, .. } => {
                 coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
             }
@@ -1180,6 +1242,7 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
         match cell {
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
+            CellSource::CellFormula { cached, .. } => out.push(cached.clone()),
             CellSource::Template { text, num_fmt, .. } => {
                 out.push(coerce_for_num_fmt(eval_cell(text, ctx)?, *num_fmt))
             }

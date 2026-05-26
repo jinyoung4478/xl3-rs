@@ -208,6 +208,18 @@ pub enum CellSource {
         aggregate: String,
         field: String,
     },
+    /// A native Excel formula in a template cell. ADR-0021 (static
+    /// cell) and ADR-0046 (cell inside an expansion block): the
+    /// formula text is preserved verbatim — references are NOT
+    /// adjusted to match the cloned row's position. The `cached`
+    /// value is what calamine read from the template, used by Stage
+    /// 1 conformance comparison and by Excel until it recalculates.
+    CellFormula {
+        text: String,
+        cached: Value,
+        format_code: Option<String>,
+        style_idx: Option<usize>,
+    },
 }
 
 impl CellSource {
@@ -345,16 +357,38 @@ fn cell_is_template_text(s: &str) -> bool {
 /// outside the range follow the column-scoped splice rule in
 /// ADR-0066. Returns `None` if no template-bearing cells were found.
 fn compute_template_col_range(cells: &[CellSource]) -> Option<(usize, usize)> {
+    // First pass: locate the Template / Subtotal core columns. Those
+    // are unambiguously inside the expansion block.
     let mut first: Option<usize> = None;
     let mut last: usize = 0;
     for (i, c) in cells.iter().enumerate() {
-        let is_template = matches!(c, CellSource::Template { .. } | CellSource::Subtotal { .. });
-        if is_template {
+        let is_core = matches!(c, CellSource::Template { .. } | CellSource::Subtotal { .. });
+        if is_core {
             first.get_or_insert(i);
             last = i;
         }
     }
-    first.map(|f| (f, last))
+    let (mut lo, mut hi) = (first?, last);
+    // ADR-0046: a native Excel formula adjacent to the template
+    // columns is part of the per-iteration block (e.g. `[Item] |
+    // [Amount] | =B2*2`). One separated by an Empty cell is a side
+    // cell that belongs to the column-scoped splice instead (fixture
+    // 142 — templates in A/B, side `=SUM(B:B)` in E). The walk stops
+    // at the first Empty in either direction so cosmetic gaps stay
+    // outside the expansion.
+    while hi + 1 < cells.len() {
+        match &cells[hi + 1] {
+            CellSource::CellFormula { .. } => hi += 1,
+            _ => break,
+        }
+    }
+    while lo > 0 {
+        match &cells[lo - 1] {
+            CellSource::CellFormula { .. } => lo -= 1,
+            _ => break,
+        }
+    }
+    Some((lo, hi))
 }
 
 /// True iff every non-Empty cell in `cells` sits *outside* the given
@@ -518,7 +552,37 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
         let range = wb
             .worksheet_range(&name)
             .with_context(|| format!("read template sheet {name:?}"))?;
-        let (rows, cols) = range.get_size();
+        // Read formulas alongside cell values so native Excel
+        // formulas (ADR-0021 / ADR-0046) round-trip. `worksheet_formula`
+        // returns a `Range<String>` shaped over the formula-bearing
+        // cells only; calamine often picks a different `start` and
+        // `end` than the value range. Cells in the formula range can
+        // also live outside the value range when the formula is the
+        // only thing in that column (e.g. fixture 142 — value range
+        // stops at column D, formulas live in column E).
+        let formula_range = wb.worksheet_formula(&name).ok();
+        let (value_rows, value_cols) = range.get_size();
+        let value_start = range.start().unwrap_or((0, 0));
+        // Combined iteration bounds: the planner walks row/col
+        // indices relative to the value range; if a formula cell
+        // sits past the value range we widen the bounds so the
+        // formula isn't silently dropped. `rows` / `cols` end up
+        // expressed in value-range-relative units the rest of the
+        // builder already understands.
+        let (rows, cols) = if let Some(fr) = formula_range.as_ref() {
+            if let (Some(fr_start), Some(fr_end)) = (fr.start(), fr.end()) {
+                let needed_rows =
+                    (fr_end.0 as i64 - value_start.0 as i64).max(value_rows as i64 - 1) + 1;
+                let needed_cols =
+                    (fr_end.1 as i64 - value_start.1 as i64).max(value_cols as i64 - 1) + 1;
+                let _ = fr_start;
+                (needed_rows.max(0) as usize, needed_cols.max(0) as usize)
+            } else {
+                (value_rows, value_cols)
+            }
+        } else {
+            (value_rows, value_cols)
+        };
 
         // ADR-0068/0069 multi-block detection. A `@block A:B` directive
         // anywhere on the sheet declares a column-bounded sub-block.
@@ -546,6 +610,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
             for (col_first, col_last) in &block_ranges {
                 let sub_rows = build_row_plans_for_range(
                     &range,
+                    formula_range.as_ref(),
                     &name,
                     rows,
                     *col_first,
@@ -571,6 +636,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
 
         let row_plans = build_row_plans_for_range(
             &range,
+            formula_range.as_ref(),
             &name,
             rows,
             0,
@@ -750,6 +816,7 @@ fn sheet_names_set<R: std::io::Read + std::io::Seek>(
 /// not visited at all.
 fn build_row_plans_for_range(
     range: &calamine::Range<CData>,
+    formulas: Option<&calamine::Range<String>>,
     sheet_name: &str,
     rows: usize,
     col_first: usize,
@@ -758,6 +825,25 @@ fn build_row_plans_for_range(
     named_source_names: &[String],
     manifest: Option<&crate::manifest::StyleManifest>,
 ) -> Result<Vec<RowPlan>> {
+    // Lookup a non-empty formula text for (r, c) or None. Calamine
+    // returns the formula text without the leading "=" (e.g. `UPPER(A1)`).
+    // The (r, c) the outer loop passes us is relative to the value
+    // `range`. Both ranges declare independent `start` offsets, so we
+    // translate to absolute coordinates via the value range's start
+    // before consulting the formula range via `get_value` (absolute).
+    let value_start = range.start().unwrap_or((0, 0));
+    let formula_at = |r: usize, c: usize| -> Option<String> {
+        formulas.and_then(|fr| {
+            let abs = (value_start.0 + r as u32, value_start.1 + c as u32);
+            fr.get_value(abs).and_then(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.clone())
+                }
+            })
+        })
+    };
     let mut row_plans: Vec<RowPlan> = Vec::with_capacity(rows);
     let mut pending_direction = Direction::Down;
     let mut pending_directives: Vec<Directive> = Vec::new();
@@ -779,7 +865,31 @@ fn build_row_plans_for_range(
             .collect();
         for c_off in 0..cols_in_range {
             let c = col_first + c_off;
+            // Native Excel formula peek: calamine reads the cached
+            // result via `range.get`, which can be Empty when the
+            // formula's inputs reference cells we haven't filled yet
+            // (e.g. `=B2*2` over a template `{{ [Amount] }}`). Only
+            // skip ahead to the per-variant branches once we've
+            // confirmed there's no formula text at this position.
+            let formula_here = formula_at(r, c);
             let cell = match range.get((r, c)) {
+                None | Some(CData::Empty) if formula_here.is_some() => {
+                    any_cell = true;
+                    directive_only = false;
+                    let formula_text = formula_here.unwrap();
+                    let format_code = styles.format_code(sheet_name, r as u32, c as u32);
+                    let style_idx = manifest.and_then(|m| {
+                        m.cells
+                            .get(sheet_name)
+                            .and_then(|map| map.get(&(r as u32, c as u32)).copied())
+                    });
+                    CellSource::CellFormula {
+                        text: formula_text,
+                        cached: Value::Empty,
+                        format_code,
+                        style_idx,
+                    }
+                }
                 None | Some(CData::Empty) => CellSource::Empty,
                 Some(CData::String(s)) if cell_is_template_text(s) => {
                     any_cell = true;
@@ -815,7 +925,26 @@ fn build_row_plans_for_range(
                 Some(other) => {
                     any_cell = true;
                     directive_only = false;
-                    CellSource::Literal(Value::from_calamine(other))
+                    // ADR-0021: a native Excel formula in a static
+                    // template cell preserves its text. ADR-0046:
+                    // the same applies to formulas inside expansion
+                    // blocks — the text is cloned verbatim per row.
+                    if let Some(formula_text) = formula_here {
+                        let format_code = styles.format_code(sheet_name, r as u32, c as u32);
+                        let style_idx = manifest.and_then(|m| {
+                            m.cells
+                                .get(sheet_name)
+                                .and_then(|map| map.get(&(r as u32, c as u32)).copied())
+                        });
+                        CellSource::CellFormula {
+                            text: formula_text,
+                            cached: Value::from_calamine(other),
+                            format_code,
+                            style_idx,
+                        }
+                    } else {
+                        CellSource::Literal(Value::from_calamine(other))
+                    }
                 }
             };
             row_cells.push(cell);
