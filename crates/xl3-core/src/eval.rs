@@ -614,24 +614,36 @@ fn is_reserved_namespace(name: &str) -> bool {
 /// `returnCol`. Falls back to the 4th arg's value when nothing matches.
 fn try_xlookup(args: &[Ast], ctx: &EvalContext) -> Result<Value> {
     if !(3..=4).contains(&args.len()) {
-        bail!(
-            "XLOOKUP expects 3 or 4 arguments, got {} (signature: XLOOKUP(value, Source[lookupCol], Source[returnCol], [fallback]))",
-            args.len()
-        );
+        return Err(crate::errors::XtlError::new(
+            crate::errors::code::EVAL_ARITY_MISMATCH,
+            format!(
+                "XLOOKUP: expected 3 or 4 arguments, got {} (signature: XLOOKUP(value, Source[lookupCol], Source[returnCol], [fallback]))",
+                args.len()
+            ),
+        )
+        .into());
     }
     let needle = eval_ast(&args[0], ctx)?;
     let (lookup_src, lookup_field) = expect_source_bracket(&args[1], "XLOOKUP arg 2")?;
     let (return_src, return_field) = expect_source_bracket(&args[2], "XLOOKUP arg 3")?;
     if lookup_src != return_src {
-        bail!(
-            "XLOOKUP arg 2 source {lookup_src:?} and arg 3 source {return_src:?} must match"
-        );
+        return Err(crate::errors::XtlError::new(
+            crate::errors::code::XLOOKUP_SOURCE_MISMATCH,
+            format!(
+                "XLOOKUP arg 2 source {lookup_src:?} and arg 3 source {return_src:?} must match"
+            ),
+        )
+        .into());
     }
     let rows = match ctx.get(lookup_src) {
         Some(Value::Rows(h)) => h,
-        _ => bail!(
-            "XLOOKUP source {lookup_src:?} is not declared in __sources__"
-        ),
+        _ => {
+            return Err(crate::errors::XtlError::new(
+                crate::errors::code::XLOOKUP_SOURCE_MISMATCH,
+                format!("XLOOKUP source {lookup_src:?} is not declared in __sources__"),
+            )
+            .into());
+        }
     };
     for row in rows.iter() {
         let cell = row.get(lookup_field).cloned().unwrap_or(Value::Empty);
@@ -649,9 +661,11 @@ fn try_xlookup(args: &[Ast], ctx: &EvalContext) -> Result<Value> {
 fn expect_source_bracket<'a>(ast: &'a Ast, role: &str) -> Result<(&'a String, &'a String)> {
     match ast {
         Ast::ReservedRef(src, field) if !is_reserved_namespace(src) => Ok((src, field)),
-        _ => bail!(
-            "{role} must be a source-prefixed bracket reference like Source[Column]"
-        ),
+        _ => Err(crate::errors::XtlError::new(
+            crate::errors::code::XLOOKUP_BARE_BRACKET,
+            format!("{role} must be a source-prefixed bracket reference like Source[Column]"),
+        )
+        .into()),
     }
 }
 

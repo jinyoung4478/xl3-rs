@@ -56,6 +56,8 @@ pub mod code {
     pub const EVAL_DIV_BY_ZERO: &str = "xl3/eval/div-by-zero";
     pub const EVAL_UNSUPPORTED_SYNTAX: &str = "xl3/eval/unsupported-syntax";
     pub const EVAL_UNKNOWN_NAME: &str = "xl3/expression/unknown-name";
+    pub const EVAL_ARITY_MISMATCH: &str = "xl3/eval/arity-mismatch";
+    pub const EVAL_OPERAND_COERCION: &str = "xl3/eval/operand-coercion";
     pub const DIRECTIVE_BAD_JOIN: &str = "xl3/directive/bad-join";
     pub const XLOOKUP_BARE_BRACKET: &str = "xl3/xlookup/bare-bracket";
     pub const XLOOKUP_SOURCE_MISMATCH: &str = "xl3/xlookup/source-mismatch";

@@ -2,8 +2,16 @@
 
 use anyhow::{bail, Result};
 
+use crate::errors::{code, XtlError};
 use crate::eval::{coerce_number, is_truthy};
 use crate::value::Value;
+
+/// Raise an `XtlError` with the canonical `xl3/eval/arity-mismatch`
+/// code carrying the same message format the spec-conformance fixtures
+/// match on.
+fn arity_err(message: impl Into<String>) -> anyhow::Error {
+    XtlError::new(code::EVAL_ARITY_MISMATCH, message).into()
+}
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
 const EXCEL_EPOCH_DAYS: i64 = -25_569;
@@ -26,7 +34,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
     match upper.as_str() {
         "IF" => {
             if args.len() != 3 {
-                bail!("IF expects 3 arguments, got {}", args.len());
+                return Err(arity_err(format!("IF: expected 3 arguments, got {}", args.len())));
             }
             Ok(if is_truthy(&args[0]) {
                 args[1].clone()
@@ -36,7 +44,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "ROUND" => {
             if args.len() != 2 {
-                bail!("ROUND expects 2 arguments, got {}", args.len());
+                return Err(arity_err(format!("ROUND: expected 2 arguments, got {}", args.len())));
             }
             let n = coerce_number(&args[0])?;
             let d = coerce_number(&args[1])? as i32;
@@ -44,7 +52,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "ABS" => {
             if args.len() != 1 {
-                bail!("ABS expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("ABS: expected 1 argument, got {}", args.len())));
             }
             Ok(Value::Number(coerce_number(&args[0])?.abs()))
         }
@@ -56,7 +64,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         "EDATE" => edate(args),
         "DATE" => {
             if args.len() != 3 {
-                bail!("DATE expects 3 arguments, got {}", args.len());
+                return Err(arity_err(format!("DATE: expected 3 arguments, got {}", args.len())));
             }
             let y = integer_arg("DATE year", &args[0])?;
             let m = integer_arg("DATE month", &args[1])?;
@@ -71,7 +79,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "IFERROR" => {
             if args.len() != 2 {
-                bail!("IFERROR expects 2 arguments, got {}", args.len());
+                return Err(arity_err(format!("IFERROR: expected 2 arguments, got {}", args.len())));
             }
             // Our error model surfaces division-by-zero / other failures
             // as Value::Empty (ADR-0025 stage-1). IFERROR replaces Empty
@@ -86,25 +94,25 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "UPPER" => {
             if args.len() != 1 {
-                bail!("UPPER expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("UPPER: expected 1 argument, got {}", args.len())));
             }
             Ok(Value::String(args[0].canonical().to_uppercase()))
         }
         "LOWER" => {
             if args.len() != 1 {
-                bail!("LOWER expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("LOWER: expected 1 argument, got {}", args.len())));
             }
             Ok(Value::String(args[0].canonical().to_lowercase()))
         }
         "TRIM" => {
             if args.len() != 1 {
-                bail!("TRIM expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("TRIM: expected 1 argument, got {}", args.len())));
             }
             Ok(Value::String(args[0].canonical().trim().to_string()))
         }
         "LEN" => {
             if args.len() != 1 {
-                bail!("LEN expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("LEN: expected 1 argument, got {}", args.len())));
             }
             Ok(Value::Number(args[0].canonical().chars().count() as f64))
         }
@@ -117,7 +125,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "HYPERLINK" => {
             if args.is_empty() || args.len() > 2 {
-                bail!("HYPERLINK expects 1 or 2 arguments");
+                return Err(arity_err("HYPERLINK: expected 1 or 2 arguments"));
             }
             // Stage-1 conformance (cell-value comparison) only needs
             // the display label (arg 2, falling back to the URL when
@@ -128,7 +136,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "ISBLANK" => {
             if args.len() != 1 {
-                bail!("ISBLANK expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("ISBLANK: expected 1 argument, got {}", args.len())));
             }
             // xl3 fixture 130: ISBLANK is true for Empty and for
             // whitespace-only strings. Same definition as the source
@@ -137,7 +145,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "IFEMPTY" => {
             if args.len() != 2 {
-                bail!("IFEMPTY expects 2 arguments, got {}", args.len());
+                return Err(arity_err(format!("IFEMPTY: expected 2 arguments, got {}", args.len())));
             }
             Ok(if is_empty_for_ifempty(&args[0]) {
                 args[1].clone()
@@ -169,7 +177,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "MAX" => {
             if args.is_empty() {
-                bail!("MAX expects at least one argument");
+                return Err(arity_err("MAX expects at least one argument"));
             }
             let mut best = f64::NEG_INFINITY;
             for a in args {
@@ -179,7 +187,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "MIN" => {
             if args.is_empty() {
-                bail!("MIN expects at least one argument");
+                return Err(arity_err("MIN expects at least one argument"));
             }
             let mut best = f64::INFINITY;
             for a in args {
@@ -196,7 +204,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "NOT" => {
             if args.len() != 1 {
-                bail!("NOT expects 1 argument, got {}", args.len());
+                return Err(arity_err(format!("NOT: expected 1 argument, got {}", args.len())));
             }
             Ok(Value::Bool(!is_truthy(&args[0])))
         }
@@ -218,7 +226,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
         }
         "TODAY" => {
             if !args.is_empty() {
-                bail!("TODAY expects no arguments, got {}", args.len());
+                return Err(arity_err(format!("TODAY: expected no arguments, got {}", args.len())));
             }
             // ADR-0005: TODAY() is the current UTC calendar date as an
             // Excel serial. We avoid pulling in `chrono` for this one
@@ -233,7 +241,7 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
 /// TEXT(value, format) returns a string rendered with supported date, number, or @ formats.
 fn text(args: &[Value]) -> Result<Value> {
     if args.len() != 2 {
-        bail!("TEXT expects 2 arguments, got {}", args.len());
+        return Err(arity_err(format!("TEXT: expected 2 arguments, got {}", args.len())));
     }
     let fmt = args[1].canonical();
     if let Value::String(s) = &args[0] {
@@ -256,7 +264,7 @@ fn text(args: &[Value]) -> Result<Value> {
 /// YEAR(date_serial) returns the Gregorian year component of an Excel serial date.
 fn year(args: &[Value]) -> Result<Value> {
     if args.len() != 1 {
-        bail!("YEAR expects 1 argument, got {}", args.len());
+        return Err(arity_err(format!("YEAR: expected 1 argument, got {}", args.len())));
     }
     Ok(Value::Number(excel_date_arg("YEAR", &args[0])?.year as f64))
 }
@@ -264,7 +272,7 @@ fn year(args: &[Value]) -> Result<Value> {
 /// MONTH(date_serial) returns the 1-based month component of an Excel serial date.
 fn month(args: &[Value]) -> Result<Value> {
     if args.len() != 1 {
-        bail!("MONTH expects 1 argument, got {}", args.len());
+        return Err(arity_err(format!("MONTH: expected 1 argument, got {}", args.len())));
     }
     Ok(Value::Number(
         excel_date_arg("MONTH", &args[0])?.month as f64,
@@ -274,7 +282,7 @@ fn month(args: &[Value]) -> Result<Value> {
 /// DAY(date_serial) returns the day-of-month component of an Excel serial date.
 fn day(args: &[Value]) -> Result<Value> {
     if args.len() != 1 {
-        bail!("DAY expects 1 argument, got {}", args.len());
+        return Err(arity_err(format!("DAY: expected 1 argument, got {}", args.len())));
     }
     Ok(Value::Number(excel_date_arg("DAY", &args[0])?.day as f64))
 }
@@ -282,7 +290,7 @@ fn day(args: &[Value]) -> Result<Value> {
 /// EOMONTH(start_serial, months) returns the serial of the target month's last day.
 fn eomonth(args: &[Value]) -> Result<Value> {
     if args.len() != 2 {
-        bail!("EOMONTH expects 2 arguments, got {}", args.len());
+        return Err(arity_err(format!("EOMONTH: expected 2 arguments, got {}", args.len())));
     }
     let d = excel_date_arg("EOMONTH", &args[0])?;
     let months = integer_arg("EOMONTH", &args[1])?;
@@ -297,7 +305,7 @@ fn eomonth(args: &[Value]) -> Result<Value> {
 /// EDATE(start_serial, months) returns the same day in the target month, clamped to month end.
 fn edate(args: &[Value]) -> Result<Value> {
     if args.len() != 2 {
-        bail!("EDATE expects 2 arguments, got {}", args.len());
+        return Err(arity_err(format!("EDATE: expected 2 arguments, got {}", args.len())));
     }
     let d = excel_date_arg("EDATE", &args[0])?;
     let months = integer_arg("EDATE", &args[1])?;
