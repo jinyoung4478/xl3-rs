@@ -1,12 +1,15 @@
 [package]
 name = "xl3-core"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Pure-Rust XLSX template rendering engine (acceleration core for xl3)"
-publish = false
+documentation = "https://docs.rs/xl3-core"
+readme = "README.md"
+keywords = ["xlsx", "excel", "template", "spreadsheet", "rendering"]
+categories = ["template-engine", "encoding", "wasm"]
 
 [dependencies]
 anyhow = "1.0.102"

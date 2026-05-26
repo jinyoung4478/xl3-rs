@@ -1,18 +1,31 @@
 //! xl3-core — pure-Rust XLSX template rendering engine.
 //!
-//! Phase 1 milestone P1-A: only the minimum needed to pass
-//! `conformance/fixtures/001-bracket-substitution`. The pipeline runs
-//! in three steps:
+//! Reads an Excel template plus a data workbook, evaluates the XTL
+//! expressions inside template cells, and emits a rendered XLSX
+//! buffer. This is the same engine that powers the `xl3-wasm` npm
+//! package; it can also be embedded directly in Rust CLIs, Tauri
+//! desktop apps, or server-side batch jobs.
 //!
-//!   1. `plan`   — parse the template workbook + `__config__` sheet into a
-//!                 `WorkbookPlan` of static and expansion rows.
-//!   2. `source` — read the data workbook into row records.
-//!   3. `render` — walk the plan, evaluating each cell through `eval`,
-//!                 emitting cells through `output`.
+//! # Quick start
 //!
-//! Module skeletons (manifest preservation, full XTL evaluator, multi-source
-//! support, etc.) will grow as later fixtures are wired in. See `PLAN.md`
-//! §5 Phase 1 for the broader roadmap.
+//! ```no_run
+//! use xl3_core::render_from_bytes_to_files;
+//!
+//! let template = std::fs::read("template.xlsx").unwrap();
+//! let data = std::fs::read("data.xlsx").unwrap();
+//! let files = render_from_bytes_to_files(&template, &data).unwrap();
+//! std::fs::write(&files[0].filename, &files[0].data).unwrap();
+//! ```
+//!
+//! # Pipeline
+//!
+//! 1. [`plan`] — parse the template workbook + `__config__` sheet
+//!    into a [`WorkbookPlan`] of static and expansion rows.
+//! 2. [`source`] — read the data workbook into row records.
+//! 3. [`render`] — walk the plan, evaluating each cell through
+//!    [`eval`], and emit cells through [`output`].
+//!
+//! See the parent repository's `PLAN.md` for the broader roadmap.
 
 pub mod directives;
 pub mod errors;
