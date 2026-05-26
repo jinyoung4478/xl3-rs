@@ -1,11 +1,13 @@
 [package]
 name = "xl3-wasm"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "WebAssembly wrapper around xl3-core for browser / Node consumers"
+# Published to npm via wasm-pack — the rust source itself isn't on
+# crates.io. Native Rust consumers should depend on `xl3-core` directly.
 publish = false
 
 [lib]
