@@ -53,6 +53,15 @@ pub mod code {
     pub const SOURCE_SHEET_MISSING: &str = "xl3/source/sheet-missing";
     pub const SOURCE_NO_HEADER: &str = "xl3/source/no-header";
     pub const SOURCE_DUPLICATE_COLUMN: &str = "xl3/source/duplicate-column";
+    pub const SOURCE_MISSING_HEADER: &str = "xl3/source/missing-header";
+    pub const SOURCE_DUPLICATE_NAME: &str = "xl3/source/duplicate-name";
+    pub const SOURCE_UNKNOWN_COLUMN: &str = "xl3/source/unknown-column";
+    pub const SOURCE_ROW_CROSS_BLOCK: &str = "xl3/source/row-cross-block";
+    pub const SOURCE_RESERVED_COLUMN_NAME: &str = "xl3/source/reserved-column-name";
+    pub const CONFIG_INVALID_SOURCE_TABLE: &str = "xl3/config/invalid-source-table";
+    pub const CELL_FORMULA_NO_CACHE: &str = "xl3/cell/formula-no-cache";
+    pub const CELL_NUMFMT_COERCION: &str = "xl3/cell/numfmt-coercion";
+    pub const CELL_ROW_OUTSIDE_REPEAT: &str = "xl3/cell/row-outside-repeat";
     pub const EVAL_DIV_BY_ZERO: &str = "xl3/eval/div-by-zero";
     pub const EVAL_UNSUPPORTED_SYNTAX: &str = "xl3/eval/unsupported-syntax";
     pub const EVAL_UNKNOWN_NAME: &str = "xl3/expression/unknown-name";
@@ -61,6 +70,14 @@ pub mod code {
     pub const DIRECTIVE_BAD_JOIN: &str = "xl3/directive/bad-join";
     pub const XLOOKUP_BARE_BRACKET: &str = "xl3/xlookup/bare-bracket";
     pub const XLOOKUP_SOURCE_MISMATCH: &str = "xl3/xlookup/source-mismatch";
+    pub const XLOOKUP_NO_MATCH: &str = "xl3/xlookup/no-match";
+    pub const PARSER_EMPTY_BLOCK: &str = "xl3/parser/empty-block";
+    pub const FILENAME_EMPTY: &str = "xl3/filename/empty";
+    pub const FILENAME_TOO_LONG: &str = "xl3/filename/too-long";
+    pub const FILENAME_COLLISION: &str = "xl3/filename/collision";
+    pub const FILENAME_SANITIZED: &str = "xl3w/filename/sanitized";
+    pub const INPUTS_MISSING_REQUIRED: &str = "xl3/inputs/missing-required";
+    pub const SUBTOTAL_OUTSIDE_GROUP: &str = "xl3/subtotal/outside-group";
     pub const TEMPLATE_NO_SHEETS: &str = "xl3/template/no-visible-sheets";
 }
 

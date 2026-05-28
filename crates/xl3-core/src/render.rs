@@ -135,6 +135,25 @@ fn render_with_reader_and_manifest(
     for (key, value) in host_inputs {
         plan.inputs.insert(key.clone(), value.clone());
     }
+    // ADR-0050 / xl3 #067: required inputs must resolve to a
+    // non-blank value once host overrides + sheet defaults have
+    // merged. Check after the merge so a blank default + explicit
+    // host value still passes.
+    for name in &plan.required_inputs {
+        let resolved = plan.inputs.get(name);
+        let is_blank = match resolved {
+            None | Some(Value::Empty) => true,
+            Some(Value::String(s)) => s.chars().all(|c| c.is_whitespace()),
+            _ => false,
+        };
+        if is_blank {
+            return Err(crate::errors::XtlError::new(
+                crate::errors::code::INPUTS_MISSING_REQUIRED,
+                format!("Input \"{}\" is required", name),
+            )
+            .into());
+        }
+    }
     let source_sheet = match plan.config.source_sheet() {
         Some(pattern) => source_reader.resolve_sheet_name(pattern).ok_or_else(|| {
             // Spec-stable message: matches xl3 (TS) /xl3-py wording so a
@@ -151,7 +170,7 @@ fn render_with_reader_and_manifest(
             ))
         })?,
     };
-    let source_table = plan.config.source_table();
+    let source_table = plan.config.source_table()?;
     let source = source_reader.read(&source_sheet, &source_table)?;
     // Load every additional named source declared on `__sources__`.
     let mut named_sources: HashMap<String, SourceData> = HashMap::new();
@@ -239,6 +258,24 @@ pub fn render_to_files_with_sources_and_manifest(
             manifest,
         )?);
     }
+    // ADR-0031 / xl3 #119: every file group must resolve to a unique
+    // output filename. A collision means the pattern lost the group
+    // key it was supposed to expand on (or the keys collapse after
+    // sanitisation); fail loudly so authors don't silently lose a
+    // partition.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for f in &out {
+        if !seen.insert(&f.filename) {
+            return Err(crate::errors::XtlError::new(
+                crate::errors::code::FILENAME_COLLISION,
+                format!(
+                    "Output filename \"{}\" produced by multiple file groups",
+                    f.filename
+                ),
+            )
+            .into());
+        }
+    }
     Ok(out)
 }
 
@@ -320,7 +357,7 @@ fn render_one_file(
     } else {
         pattern
     };
-    let filename = sanitize_filename(&resolved, &mut warnings);
+    let filename = sanitize_filename(&resolved, &mut warnings)?;
     Ok(OutputFile {
         filename,
         data: bytes,
@@ -332,21 +369,66 @@ fn render_one_file(
 /// `<>:"/\\|?*` with `_`, matching xl3 (TS)'s `sanitiseFilename`
 /// behaviour. Emits one warning per file when the result differs from
 /// the input, in the exact wording the conformance corpus checks for
-/// (ADR-0002 / fixture 006).
-fn sanitize_filename(name: &str, warnings: &mut Vec<XtlWarning>) -> String {
-    let cleaned: String = name
+/// (ADR-0002 / fixture 006). Also handles Windows reserved basenames
+/// (CON, PRN, AUX, NUL, COM1-9, LPT1-9 — xl3 #007) by appending `_`,
+/// rejects empty basenames (#019), and enforces the 255-byte filename
+/// limit (#020).
+fn sanitize_filename(name: &str, warnings: &mut Vec<XtlWarning>) -> Result<String> {
+    let cleaned_chars: String = name
         .chars()
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
             _ => c,
         })
         .collect();
+    // Split into basename + extension so we can compare against the
+    // Windows reserved set and detect empty basenames after stripping
+    // the `.xlsx` (or whatever) suffix.
+    let (base, ext) = match cleaned_chars.rfind('.') {
+        Some(i) => (&cleaned_chars[..i], &cleaned_chars[i..]),
+        None => (cleaned_chars.as_str(), ""),
+    };
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let base_for_reserved_match = base.to_ascii_uppercase();
+    let cleaned = if RESERVED.iter().any(|r| *r == base_for_reserved_match) {
+        format!("{base}_{ext}")
+    } else {
+        cleaned_chars.clone()
+    };
     if cleaned != name {
         warnings.push(XtlWarning {
             message: format!("Output filename \"{name}\" sanitized to \"{cleaned}\""),
         });
     }
-    cleaned
+    // After sanitisation: did the basename collapse to empty? `".xlsx"`
+    // and the like are unusable filenames on Windows / macOS Finder.
+    let (cleaned_base, _) = match cleaned.rfind('.') {
+        Some(i) => (&cleaned[..i], &cleaned[i..]),
+        None => (cleaned.as_str(), ""),
+    };
+    if cleaned_base.is_empty() {
+        return Err(crate::errors::XtlError::new(
+            crate::errors::code::FILENAME_EMPTY,
+            format!(
+                "Output filename \"{name}\" sanitized to an empty string and is invalid."
+            ),
+        )
+        .into());
+    }
+    if cleaned.as_bytes().len() > 255 {
+        return Err(crate::errors::XtlError::new(
+            crate::errors::code::FILENAME_TOO_LONG,
+            format!(
+                "Output filename \"{cleaned}\" exceeds the 255-byte limit ({} bytes)",
+                cleaned.as_bytes().len()
+            ),
+        )
+        .into());
+    }
+    Ok(cleaned)
 }
 
 /// xlsx limits sheet names to 31 characters and disallows `:\/?*[]`.
@@ -560,6 +642,18 @@ fn render_sheet(
                         _ => None,
                     })
                     .unwrap_or_default();
+                // ADR-0038 / xl3 #137: `@subtotal` cells only have a
+                // group to aggregate over when an `@group` directive
+                // is active on the same block. Reject early so the
+                // host gets the canonical code, not a downstream
+                // "no rows" surprise.
+                if !subtotal_rows.is_empty() && group_fields.is_empty() {
+                    return Err(crate::errors::XtlError::new(
+                        crate::errors::code::SUBTOTAL_OUTSIDE_GROUP,
+                        "@subtotal requires an active @group directive",
+                    )
+                    .into());
+                }
                 let active_source: Option<String> = directives.iter().find_map(|d| match d {
                     Directive::Source(n) => Some(n.clone()),
                     _ => None,
@@ -882,8 +976,8 @@ fn render_subtotal_row(
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
             CellSource::CellFormula { cached, .. } => cached.clone(),
-            CellSource::Template { text, num_fmt, .. } => {
-                coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
+            CellSource::Template { text, num_fmt, format_code, .. } => {
+                coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt, format_code.as_deref())?
             }
             CellSource::Subtotal { aggregate, field } => {
                 // Build an `<FN>([<field>])` expression and run it
@@ -1117,7 +1211,7 @@ fn render_expand_right_row(
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
             CellSource::CellFormula { cached, .. } => out.push(cached.clone()),
-            CellSource::Template { text, num_fmt, .. } => {
+            CellSource::Template { text, num_fmt, format_code, .. } => {
                 if emitted_expansion {
                     anyhow::bail!(
                         "multi-column @repeat right (two template cells in one expansion row) not yet supported"
@@ -1131,7 +1225,7 @@ fn render_expand_right_row(
                     ctx.insert("__inputs__".to_string(), inputs_value.clone());
                     ctx.insert("__lists__".to_string(), lists_value.clone());
                     inject_named_sources(&mut ctx, named_sources);
-                    out.push(coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt));
+                    out.push(coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt, format_code.as_deref())?);
                 }
             }
             CellSource::Subtotal { .. } => {
@@ -1226,10 +1320,19 @@ fn render_static_row(
             CellSource::Empty => Value::Empty,
             CellSource::Literal(v) => v.clone(),
             CellSource::CellFormula { cached, .. } => cached.clone(),
-            CellSource::Template { text, num_fmt, .. } => {
-                coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt)
+            CellSource::Template { text, num_fmt, format_code, .. } => {
+                coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt, format_code.as_deref())?
             }
-            CellSource::Subtotal { .. } => Value::Empty,
+            CellSource::Subtotal { .. } => {
+                // xl3 #137: a `@subtotal` cell that reached this
+                // branch is sitting on a Static row — i.e. no
+                // enclosing ExpandDown with `@group` claimed it.
+                return Err(crate::errors::XtlError::new(
+                    crate::errors::code::SUBTOTAL_OUTSIDE_GROUP,
+                    "@subtotal requires an active @group directive",
+                )
+                .into());
+            }
         };
         out.push(value);
     }
@@ -1243,8 +1346,8 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
             CellSource::Empty => out.push(Value::Empty),
             CellSource::Literal(v) => out.push(v.clone()),
             CellSource::CellFormula { cached, .. } => out.push(cached.clone()),
-            CellSource::Template { text, num_fmt, .. } => {
-                out.push(coerce_for_num_fmt(eval_cell(text, ctx)?, *num_fmt))
+            CellSource::Template { text, num_fmt, format_code, .. } => {
+                out.push(coerce_for_num_fmt(eval_cell(text, ctx)?, *num_fmt, format_code.as_deref())?)
             }
             CellSource::Subtotal { .. } => out.push(Value::Empty),
         }
@@ -1258,34 +1361,60 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
 ///   the string)
 /// - date format + ISO-style date string → Excel serial Number
 /// - text format (`@`) + Number → canonical string
-fn coerce_for_num_fmt(value: Value, kind: NumFmtKind) -> Value {
+fn coerce_for_num_fmt(value: Value, kind: NumFmtKind, format_code: Option<&str>) -> Result<Value> {
     match kind {
         NumFmtKind::Numeric => match value {
             Value::String(s) => {
                 let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return Ok(Value::String(s));
+                }
                 let cleaned: String = trimmed.chars().filter(|c| *c != ',').collect();
                 match cleaned.parse::<f64>() {
-                    Ok(n) => Value::Number(n),
-                    Err(_) => Value::String(s),
+                    Ok(n) => Ok(Value::Number(n)),
+                    // xl3 #021: a Numeric-formatted cell whose value
+                    // can't parse as a number is a template/data
+                    // mismatch the renderer must surface, not silently
+                    // pass through as text (which would lose the
+                    // intended visual format anyway).
+                    Err(_) => Err(crate::errors::XtlError::new(
+                        crate::errors::code::CELL_NUMFMT_COERCION,
+                        format!(
+                            "Value cannot be coerced to a number for cell format \"{}\": {s}",
+                            format_code.unwrap_or("General")
+                        ),
+                    )
+                    .into()),
                 }
             }
-            other => other,
+            other => Ok(other),
         },
         NumFmtKind::Date => match value {
             Value::String(ref s) => {
                 if let Some(serial) = parse_iso_date_to_serial(s.trim()) {
-                    Value::Number(serial)
+                    Ok(Value::Number(serial))
+                } else if s.trim().is_empty() {
+                    Ok(value)
                 } else {
-                    value
+                    // xl3 #022: same shape as Numeric, but for date
+                    // formats.
+                    Err(crate::errors::XtlError::new(
+                        crate::errors::code::CELL_NUMFMT_COERCION,
+                        format!(
+                            "Value cannot be coerced to a date for cell format \"{}\": {s}",
+                            format_code.unwrap_or("yyyy-mm-dd")
+                        ),
+                    )
+                    .into())
                 }
             }
-            other => other,
+            other => Ok(other),
         },
-        NumFmtKind::Text => match value {
+        NumFmtKind::Text => Ok(match value {
             Value::Number(n) => Value::String(canonical_number(n)),
             other => other,
-        },
-        NumFmtKind::General => value,
+        }),
+        NumFmtKind::General => Ok(value),
     }
 }
 

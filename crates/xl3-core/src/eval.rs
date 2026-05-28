@@ -68,6 +68,16 @@ pub fn eval_cell(template: &str, ctx: &EvalContext) -> Result<Value> {
 }
 
 pub fn eval_expression_str(expr: &str, ctx: &EvalContext) -> Result<Value> {
+    if expr.trim().is_empty() {
+        // ADR-0021 (xl3 #099): `{{ }}` with nothing inside is a
+        // template authoring error, not a silent no-op. Surface the
+        // canonical code so the host can pinpoint it.
+        return Err(crate::errors::XtlError::new(
+            crate::errors::code::PARSER_EMPTY_BLOCK,
+            "Empty template block",
+        )
+        .into());
+    }
     let tokens = tokenize(expr)?;
     let mut parser = Parser::new(&tokens);
     let ast = parser.parse_expression(0)?;
@@ -422,10 +432,29 @@ impl<'a> Parser<'a> {
             }
             Tok::Op(Op::Sub) => {
                 let rhs = self.parse_expression(7)?;
+                // ADR-0028 / xl3 #113: unary `-` / `!` directly on a
+                // bare or source-prefixed bracket reference is
+                // forbidden — the spec wants the negation expressed
+                // with arithmetic (`0 - [Col]`) so source-row scoping
+                // stays explicit.
+                if matches!(rhs, Ast::Bracket(_) | Ast::ReservedRef(_, _)) {
+                    return Err(crate::errors::XtlError::new(
+                        crate::errors::code::EVAL_UNSUPPORTED_SYNTAX,
+                        "Unsupported expression: unary `-` on a column reference",
+                    )
+                    .into());
+                }
                 Ok(Ast::UnaryNeg(Box::new(rhs)))
             }
             Tok::Op(Op::Not) => {
                 let rhs = self.parse_expression(7)?;
+                if matches!(rhs, Ast::Bracket(_) | Ast::ReservedRef(_, _)) {
+                    return Err(crate::errors::XtlError::new(
+                        crate::errors::code::EVAL_UNSUPPORTED_SYNTAX,
+                        "Unsupported expression: unary `!` on a column reference",
+                    )
+                    .into());
+                }
                 Ok(Ast::UnaryNot(Box::new(rhs)))
             }
             Tok::Ident(name) => {
@@ -525,6 +554,20 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
             // read of an unset key.
             match ctx.get(ns) {
                 Some(Value::Map(m)) => Ok(m.get(key).cloned().unwrap_or(Value::Empty)),
+                // ADR-0026 / xl3 #073: a `Source[Field]` reference
+                // outside any `@source Source` expansion block is a
+                // row-cross — the engine can't pick a single row to
+                // resolve it against. Reserved namespaces (`__*__`)
+                // legitimately resolve to Empty when unset (xl3
+                // permissive read); named sources don't.
+                _ if !is_reserved_namespace(ns) => Err(crate::errors::XtlError::new(
+                    crate::errors::code::SOURCE_ROW_CROSS_BLOCK,
+                    format!(
+                        "Cannot reference {}[{}] outside an active @source {}",
+                        ns, key, ns
+                    ),
+                )
+                .into()),
                 _ => Ok(Value::Empty),
             }
         }
@@ -542,7 +585,18 @@ fn eval_ast(ast: &Ast, ctx: &EvalContext) -> Result<Value> {
             // expansion block. Resolved from ctx so the render layer
             // owns the actual numbering.
             if upper == "ROW" && args.is_empty() {
-                return Ok(ctx.get(ROWNUM_KEY).cloned().unwrap_or(Value::Empty));
+                // xl3 #042: ROW() returns the source-row index within
+                // the active @repeat block. With no expansion frame
+                // on the stack it has nothing to return — surface the
+                // canonical code so authors don't get a confusing
+                // Empty / 0.
+                return ctx.get(ROWNUM_KEY).cloned().ok_or_else(|| {
+                    crate::errors::XtlError::new(
+                        crate::errors::code::CELL_ROW_OUTSIDE_REPEAT,
+                        "ROW() called outside a repeat block",
+                    )
+                    .into()
+                });
             }
             // XLOOKUP needs the AST of its source-bracketed args, so it
             // routes through its own dispatch ahead of scalar builtins.
@@ -654,7 +708,18 @@ fn try_xlookup(args: &[Ast], ctx: &EvalContext) -> Result<Value> {
     if args.len() == 4 {
         eval_ast(&args[3], ctx)
     } else {
-        Ok(Value::Empty)
+        // xl3 #076: with no fallback argument, an empty match set
+        // must surface the canonical `xl3/xlookup/no-match` code so
+        // the host can distinguish "not found" from a normal Empty
+        // value (which a fallback would have produced legitimately).
+        Err(crate::errors::XtlError::new(
+            crate::errors::code::XLOOKUP_NO_MATCH,
+            format!(
+                "XLOOKUP found no row where {}[{}] matched the needle",
+                lookup_src, lookup_field,
+            ),
+        )
+        .into())
     }
 }
 
@@ -681,6 +746,17 @@ fn ctx_rows<'a>(ctx: &'a EvalContext) -> Option<&'a RowsHandle> {
 }
 
 fn aggregate_over_field(name: &str, rows: &RowsHandle, field: &str) -> Result<Value> {
+    // xl3 #091: typo guards. If NONE of the rows contains a column
+    // named `field`, the column does not exist — surface the canonical
+    // code instead of returning 0 / Empty (which silently masks
+    // template bugs like `SUM(Renewals[Amout])`).
+    if !rows.is_empty() && rows.iter().all(|r| !r.contains_key(field)) {
+        return Err(crate::errors::XtlError::new(
+            crate::errors::code::SOURCE_UNKNOWN_COLUMN,
+            format!("Column {:?} does not exist in the active source rows", field),
+        )
+        .into());
+    }
     match name {
         "SUM" => {
             let mut acc = 0f64;
@@ -864,13 +940,19 @@ pub(crate) fn coerce_number(v: &Value) -> Result<f64> {
             // xl3 ADR-0009 allows numeric strings with thousands
             // separators, e.g. "1,234.5" → 1234.5.
             let stripped: String = trimmed.chars().filter(|c| *c != ',').collect();
-            stripped
-                .parse::<f64>()
-                .map_err(|_| anyhow!("cannot coerce string {s:?} to number"))
+            stripped.parse::<f64>().map_err(|_| {
+                crate::errors::XtlError::new(
+                    crate::errors::code::EVAL_OPERAND_COERCION,
+                    format!("cannot coerce string {s:?} to number"),
+                )
+                .into()
+            })
         }
-        Value::Rows(_) | Value::Map(_) | Value::List(_) => {
-            bail!("cannot coerce a composite Value to a number")
-        }
+        Value::Rows(_) | Value::Map(_) | Value::List(_) => Err(crate::errors::XtlError::new(
+            crate::errors::code::EVAL_OPERAND_COERCION,
+            "cannot coerce a composite Value to a number",
+        )
+        .into()),
     }
 }
 

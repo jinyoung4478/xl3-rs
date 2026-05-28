@@ -53,10 +53,11 @@ impl ConfigMeta {
     /// "Source Data Model"). Returns the default — first row as
     /// header, data continues to the end of the sheet — when the
     /// value is missing or unrecognised.
-    pub fn source_table(&self) -> SourceTable {
-        self.get("source_table")
-            .map(parse_source_table)
-            .unwrap_or(SourceTable::HeaderRow(1))
+    pub fn source_table(&self) -> Result<SourceTable> {
+        match self.get("source_table") {
+            Some(raw) => parse_source_table(raw),
+            None => Ok(SourceTable::HeaderRow(1)),
+        }
     }
 }
 
@@ -120,10 +121,24 @@ pub enum SourceTable {
     },
 }
 
-fn parse_source_table(raw: &str) -> SourceTable {
+fn parse_source_table(raw: &str) -> Result<SourceTable> {
     let s = raw.trim();
-    if let Ok(n) = s.parse::<usize>() {
-        return SourceTable::HeaderRow(n.max(1));
+    if s.is_empty() {
+        return Ok(SourceTable::HeaderRow(1));
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        // xl3 #034: 0 / negative aren't valid header rows. Reject
+        // instead of silently coercing to 1 so authors get told.
+        if n < 1 {
+            return Err(crate::errors::XtlError::new(
+                crate::errors::code::CONFIG_INVALID_SOURCE_TABLE,
+                format!(
+                    "source_table row numbers must be 1-based positive integers, got {n}"
+                ),
+            )
+            .into());
+        }
+        return Ok(SourceTable::HeaderRow(n as usize));
     }
     if let Some((a, b)) = s.split_once(':') {
         let lhs = parse_a1_part(a.trim());
@@ -137,15 +152,19 @@ fn parse_source_table(raw: &str) -> SourceTable {
                 Some(c2) => (c1.min(c2), Some(c1.max(c2))),
                 None => (c1, None),
             };
-            return SourceTable::Range {
+            return Ok(SourceTable::Range {
                 first_row,
                 last_row,
                 first_col,
                 last_col,
-            };
+            });
         }
     }
-    SourceTable::HeaderRow(1)
+    Err(crate::errors::XtlError::new(
+        crate::errors::code::CONFIG_INVALID_SOURCE_TABLE,
+        format!("source_table row numbers must be 1-based positive integers, got {s:?}"),
+    )
+    .into())
 }
 
 /// Parse one half of an A1 range — accepts `B3` (cell), `B` (column
@@ -310,6 +329,11 @@ pub struct WorkbookPlan {
     /// Per-input default value from the `__inputs__` sheet, keyed by
     /// input name. Host inputs (if any) override these at render time.
     pub inputs: HashMap<String, Value>,
+    /// Input names flagged `required: true` on the `__inputs__`
+    /// sheet. Validation happens at render time, after host overrides
+    /// have been merged, so a missing required input surfaces the
+    /// canonical `xl3/inputs/missing-required` code.
+    pub required_inputs: Vec<String>,
     /// Named value lists from the `__lists__` sheet. Each column is a
     /// list — header is the list name, cells below are the values.
     /// Used by `@filter [Field] in __lists__[Name]`.
@@ -663,6 +687,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
     // sheet `name | type | default | label | description | options ...`
     // columns; we only need name → default for now.
     let mut inputs = HashMap::new();
+    let mut required_inputs: Vec<String> = Vec::new();
     if sheet_names_set(&wb).contains("__inputs__") {
         if let Ok(range) = wb.worksheet_range("__inputs__") {
             let (rows, cols) = range.get_size();
@@ -678,6 +703,39 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
                 let default_col = headers
                     .iter()
                     .position(|h| h.eq_ignore_ascii_case("default"));
+                let required_col = headers
+                    .iter()
+                    .position(|h| h.eq_ignore_ascii_case("required"));
+                // ADR-0010 / xl3 #067: an input is required when EITHER
+                // the `required` column says so OR the `default` column
+                // is missing / blank for that row. Walk every declared
+                // input row so the implicit case is captured.
+                for r in 1..rows {
+                    let name = match range.get((r, name_col)) {
+                        Some(CData::String(s)) if !s.is_empty() => s.clone(),
+                        _ => continue,
+                    };
+                    let explicit_required = required_col.and_then(|c| range.get((r, c))).map(
+                        |v| match v {
+                            CData::Bool(b) => *b,
+                            CData::String(s) => {
+                                matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "y")
+                            }
+                            CData::Float(f) => *f != 0.0,
+                            CData::Int(i) => *i != 0,
+                            _ => false,
+                        },
+                    );
+                    let has_default = default_col
+                        .and_then(|c| range.get((r, c)))
+                        .map(|v| !matches!(v, CData::Empty)
+                            && !matches!(v, CData::String(s) if s.chars().all(|c| c.is_whitespace())))
+                        .unwrap_or(false);
+                    let is_required = explicit_required.unwrap_or(false) || !has_default;
+                    if is_required {
+                        required_inputs.push(name);
+                    }
+                }
                 if let Some(default_col) = default_col {
                     // ADR-0050: __inputs__ default values may themselves
                     // be XTL templates that reference __config__ and
@@ -787,7 +845,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
                     let table = if table_raw.is_empty() {
                         SourceTable::HeaderRow(1)
                     } else {
-                        parse_source_table(&table_raw)
+                        parse_source_table(&table_raw)?
                     };
                     named_sources.insert(name, SourceDecl { sheet, table });
                 }
@@ -799,6 +857,7 @@ fn parse_template_inner<R: std::io::Read + std::io::Seek>(
         config,
         sheets,
         inputs,
+        required_inputs,
         lists,
         named_sources,
     })

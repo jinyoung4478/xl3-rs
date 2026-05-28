@@ -230,7 +230,7 @@ fn preview_inner(
                 ))
             })?,
     };
-    let source_table = plan.config.source_table();
+    let source_table = plan.config.source_table()?;
     let default_source = {
         use crate::source::SourceReader;
         source_reader.read(&source_sheet, &source_table)?

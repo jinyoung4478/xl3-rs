@@ -131,6 +131,28 @@ impl SourceReader for CalamineSourceReader {
             .workbook
             .worksheet_range(sheet)
             .with_context(|| format!("read source sheet {sheet:?}"))?;
+        // Read formulas alongside values so we can tell "blank cell"
+        // (silent gap, acceptable terminator) from "formula cell whose
+        // cached result is missing" (template error, xl3 #018 / #037).
+        // Callers below already use absolute sheet coords for `(r, c)`,
+        // so we hand them straight to `Range::get_value`.
+        let formula_range = self.workbook.worksheet_formula(sheet).ok();
+        let formula_at = |r: usize, c: usize| -> Option<String> {
+            formula_range.as_ref().and_then(|fr| {
+                fr.get_value((r as u32, c as u32))
+                    .and_then(|s| if s.is_empty() { None } else { Some(s.clone()) })
+            })
+        };
+        let a1 = |r: usize, c: usize| -> String {
+            let mut col = c + 1;
+            let mut letters = String::new();
+            while col > 0 {
+                let rem = (col - 1) % 26;
+                letters.insert(0, char::from(b'A' + rem as u8));
+                col = (col - 1) / 26;
+            }
+            format!("{letters}{}", r + 1)
+        };
 
         if range.get_size() == (0, 0) {
             return Ok(SourceData {
@@ -153,33 +175,44 @@ impl SourceReader for CalamineSourceReader {
 
         // Resolve the (header_row, data_row_range, col_range) tuple
         // from the SourceTable. All indices below are absolute, 0-based.
-        let (header_row, data_first, data_last_excl, col_first, col_last_excl) = match table {
-            SourceTable::HeaderRow(n) => {
-                let header = n.saturating_sub(1);
-                let row_end_excl = last_row_abs + 1;
-                let col_end_excl = last_col_abs + 1;
-                (header, header + 1, row_end_excl, 0usize, col_end_excl)
-            }
-            SourceTable::Range {
-                first_row,
-                last_row,
-                first_col,
-                last_col,
-            } => {
-                let header = first_row.saturating_sub(1);
-                let data_first = header + 1;
-                let data_last_excl = match last_row {
-                    Some(lr) => (*lr).min(last_row_abs + 1),
-                    None => last_row_abs + 1,
-                };
-                let col_first0 = first_col.saturating_sub(1);
-                let col_last_excl0 = match last_col {
-                    Some(lc) => (*lc).min(last_col_abs + 1),
-                    None => last_col_abs + 1,
-                };
-                (header, data_first, data_last_excl, col_first0, col_last_excl0)
-            }
-        };
+        // `explicit_col_last` says the user pinned the right edge (and
+        // therefore an Empty cell before it is a header gap, not a
+        // legitimate terminator).
+        let (header_row, data_first, data_last_excl, col_first, col_last_excl, explicit_col_last) =
+            match table {
+                SourceTable::HeaderRow(n) => {
+                    let header = n.saturating_sub(1);
+                    let row_end_excl = last_row_abs + 1;
+                    let col_end_excl = last_col_abs + 1;
+                    (header, header + 1, row_end_excl, 0usize, col_end_excl, false)
+                }
+                SourceTable::Range {
+                    first_row,
+                    last_row,
+                    first_col,
+                    last_col,
+                } => {
+                    let header = first_row.saturating_sub(1);
+                    let data_first = header + 1;
+                    let data_last_excl = match last_row {
+                        Some(lr) => (*lr).min(last_row_abs + 1),
+                        None => last_row_abs + 1,
+                    };
+                    let col_first0 = first_col.saturating_sub(1);
+                    let col_last_excl0 = match last_col {
+                        Some(lc) => (*lc).min(last_col_abs + 1),
+                        None => last_col_abs + 1,
+                    };
+                    (
+                        header,
+                        data_first,
+                        data_last_excl,
+                        col_first0,
+                        col_last_excl0,
+                        last_col.is_some(),
+                    )
+                }
+            };
 
         if header_row > last_row_abs {
             return Err(anyhow!(
@@ -258,7 +291,37 @@ impl SourceReader for CalamineSourceReader {
                         c += 1;
                     }
                 }
-                None | Some(CData::Empty) => break,
+                None | Some(CData::Empty) => {
+                    // xl3 #037: header cell is a formula whose cached
+                    // value is missing. calamine returns Empty for the
+                    // cached result; check the formula range to tell
+                    // the two apart.
+                    if let Some(_f) = formula_at(master_pos.0 as usize, master_pos.1 as usize) {
+                        return Err(crate::errors::XtlError::new(
+                            crate::errors::code::CELL_FORMULA_NO_CACHE,
+                            format!(
+                                "Formula cell {} has no cached result",
+                                a1(master_pos.0 as usize, master_pos.1 as usize)
+                            ),
+                        )
+                        .into());
+                    }
+                    // xl3 #032: when the user pinned the right edge
+                    // explicitly (e.g. `source_table = B3:D`), an
+                    // empty cell BEFORE that edge is a gap that
+                    // breaks the row-as-record contract.
+                    if explicit_col_last && c + 1 < col_last_excl {
+                        return Err(crate::errors::XtlError::new(
+                            crate::errors::code::SOURCE_MISSING_HEADER,
+                            format!(
+                                "source_table header cell {} is empty",
+                                a1(master_pos.0 as usize, master_pos.1 as usize)
+                            ),
+                        )
+                        .into());
+                    }
+                    break;
+                }
                 Some(other) => {
                     bail!(
                         "source header at column {c} is not a string: {other:?} (xl3 expects text headers)"
@@ -268,7 +331,45 @@ impl SourceReader for CalamineSourceReader {
         }
 
         if headers.is_empty() {
-            return Err(anyhow!("source sheet {sheet:?} has no header row"));
+            return Err(crate::errors::XtlError::new(
+                crate::errors::code::SOURCE_NO_HEADER,
+                format!("source sheet {sheet:?} has no header row"),
+            )
+            .into());
+        }
+        // xl3 #033: duplicate header names break the row-as-record
+        // model — a later column would shadow the earlier one. Detect
+        // up front so the host gets a precise pointer.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for h in &headers {
+            if !seen.insert(h.as_str()) {
+                return Err(crate::errors::XtlError::new(
+                    crate::errors::code::SOURCE_DUPLICATE_NAME,
+                    format!("source_table has duplicate header {:?}", h),
+                )
+                .into());
+            }
+        }
+        // xl3 #109: reject column names that collide with the
+        // engine's reserved internal namespaces. Authors hitting this
+        // typically have a literal `Rows` / `__inputs__` column in
+        // their data and need to rename it.
+        const RESERVED: &[&str] = &[
+            "Rows",
+            "__rows__",
+            "__config__",
+            "__inputs__",
+            "__lists__",
+            "__sources__",
+        ];
+        for h in &headers {
+            if RESERVED.iter().any(|r| r.eq_ignore_ascii_case(h)) {
+                return Err(crate::errors::XtlError::new(
+                    crate::errors::code::SOURCE_RESERVED_COLUMN_NAME,
+                    format!("source column {:?} uses a reserved internal name", h),
+                )
+                .into());
+            }
         }
 
         let mut data_rows = Vec::with_capacity(data_last_excl.saturating_sub(data_first));
@@ -277,9 +378,19 @@ impl SourceReader for CalamineSourceReader {
             let mut row_blank = true;
             for (i, header) in headers.iter().enumerate() {
                 let c = header_cols[i];
-                let raw = cell_at(r, c)
-                    .map(Value::from_calamine)
-                    .unwrap_or(Value::Empty);
+                let raw_cell = cell_at(r, c);
+                // xl3 #018: data cell is a formula whose cached value
+                // calamine doesn't have; treat as a hard error so the
+                // template author knows to open the workbook and let
+                // Excel recalculate before re-running xl3.
+                if matches!(raw_cell, None | Some(CData::Empty)) && formula_at(r, c).is_some() {
+                    return Err(crate::errors::XtlError::new(
+                        crate::errors::code::CELL_FORMULA_NO_CACHE,
+                        format!("Formula cell {} has no cached result", a1(r, c)),
+                    )
+                    .into());
+                }
+                let raw = raw_cell.map(Value::from_calamine).unwrap_or(Value::Empty);
                 // ADR-0017: a numeric source cell whose style is a date
                 // numFmt becomes Value::DateNumber. Arithmetic and
                 // comparison treat it like Number; only `canonical()`
