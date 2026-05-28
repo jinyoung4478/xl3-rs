@@ -128,6 +128,10 @@ pub fn write_workbook_with_manifest(
                         Value::String(s) => s.clone(),
                         Value::Number(n) | Value::DateNumber(n) => crate::value::canonical_number(*n),
                         Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+                        Value::Error(code) => code.clone(),
+                        Value::Hyperlink { text, url } => {
+                            if text.is_empty() { url.clone() } else { text.clone() }
+                        }
                         Value::Rows(_) | Value::Map(_) | Value::List(_) => String::new(),
                     };
                     let f = Formula::new(formula_text).set_result(cached_result);
@@ -153,11 +157,26 @@ pub fn write_workbook_with_manifest(
                     (Value::String(s), None) => {
                         ws.write_string(r32, c16, s)?;
                     }
-                    (Value::Number(n) | Value::DateNumber(n), Some(f)) => {
+                    (Value::Number(n), Some(f)) => {
                         ws.write_number_with_format(r32, c16, *n, f)?;
                     }
-                    (Value::Number(n) | Value::DateNumber(n), None) => {
+                    (Value::Number(n), None) => {
                         ws.write_number(r32, c16, *n)?;
+                    }
+                    // ADR-0017 / ADR-0019: a source-derived date cell
+                    // (numFmt-classified as date) round-trips through the
+                    // template as `DateNumber`; if no override format is
+                    // supplied we attach a default date numFmt so the
+                    // consuming spreadsheet reads it back as a Date.
+                    // exceljs in particular needs the format to surface
+                    // `cell.value instanceof Date` for the conformance
+                    // comparator.
+                    (Value::DateNumber(n), Some(f)) => {
+                        ws.write_number_with_format(r32, c16, *n, f)?;
+                    }
+                    (Value::DateNumber(n), None) => {
+                        let date_fmt = Format::new().set_num_format("yyyy-mm-dd");
+                        ws.write_number_with_format(r32, c16, *n, &date_fmt)?;
                     }
                     (Value::Bool(b), Some(f)) => {
                         ws.write_boolean_with_format(r32, c16, *b, f)?;
@@ -168,6 +187,28 @@ pub fn write_workbook_with_manifest(
                     (Value::Rows(_) | Value::Map(_) | Value::List(_), _) => {
                         // Internal context values — never emitted to a
                         // cell. Defensive no-op.
+                    }
+                    // ADR-0025: emit an Excel error cell. rust_xlsxwriter
+                    // has no direct error-cell API, so we go through
+                    // write_formula with an empty formula expression —
+                    // exceljs reads `<c t="e"><f/><v>#DIV/0!</v></c>` as
+                    // `{ error: '#DIV/0!' }`, which is what the
+                    // conformance comparator pins against.
+                    (Value::Error(code), fmt_opt) => {
+                        let f = Formula::new("").set_result(code.clone());
+                        if let Some(format) = fmt_opt {
+                            ws.write_formula_with_format(r32, c16, f, format)?;
+                        } else {
+                            ws.write_formula(r32, c16, f)?;
+                        }
+                    }
+                    // ADR-0039: a top-level HYPERLINK marker becomes a
+                    // real Excel hyperlink cell. The visible text is the
+                    // label (or URL when label is empty per ADR-0039
+                    // §"Implementation notes").
+                    (Value::Hyperlink { url, text }, _) => {
+                        let visible = if text.is_empty() { url.clone() } else { text.clone() };
+                        ws.write_url_with_text(r32, c16, url.as_str(), visible)?;
                     }
                 }
             }

@@ -214,6 +214,15 @@ pub fn render_to_files_with_sources_and_manifest(
 ) -> Result<Vec<OutputFile>> {
     let group_keys = plan.config.file_group_keys();
     if group_keys.is_empty() {
+        // xl3 grouper: when the file-group key list is empty, the
+        // partitioner iterates source rows and would emit zero groups
+        // for a zero-row source — so the JS engine returns zero files
+        // for an empty source_table (conformance 031). Match that
+        // behavior; otherwise we'd produce a single header-only file
+        // the fixture does not expect.
+        if source.rows.is_empty() {
+            return Ok(Vec::new());
+        }
         return Ok(vec![render_one_file(
             plan,
             source,
@@ -230,7 +239,20 @@ pub fn render_to_files_with_sources_and_manifest(
     for row in &source.rows {
         let values: Vec<String> = group_keys
             .iter()
-            .map(|k| row.get(k).cloned().unwrap_or(Value::Empty).canonical())
+            .map(|k| {
+                let raw = row.get(k).cloned().unwrap_or(Value::Empty).canonical();
+                // ADR-0026: empty / whitespace-only file group keys are
+                // substituted with the literal `(blank)` placeholder
+                // before filename interpolation. Conversion does not
+                // halt for sloppy rows — they land in a `(blank).xlsx`
+                // bucket. Substitution happens at extract time so the
+                // partition identity matches the rendered name.
+                if raw.chars().all(char::is_whitespace) {
+                    "(blank)".to_string()
+                } else {
+                    raw
+                }
+            })
             .collect();
         if let Some(g) = groups.iter_mut().find(|g| g.0 == values) {
             g.1.push(row.clone());
@@ -1362,6 +1384,12 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
 /// - date format + ISO-style date string → Excel serial Number
 /// - text format (`@`) + Number → canonical string
 fn coerce_for_num_fmt(value: Value, kind: NumFmtKind, format_code: Option<&str>) -> Result<Value> {
+    // xl3 renderer.preserveValue / coerceNumberValue / coerceDateValue /
+    // canonicalString all collapse `undefined` to the empty string when
+    // a `{{ ... }}` template evaluates to nothing. Mirror that here so
+    // `{{ [Memo] }}` against a missing column emits an explicit `""`
+    // cell instead of silently disappearing from the row.
+    let value = if matches!(value, Value::Empty) { Value::String(String::new()) } else { value };
     match kind {
         NumFmtKind::Numeric => match value {
             Value::String(s) => {

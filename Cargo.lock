@@ -369,6 +369,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "calamine",
+ "js-sys",
  "quick-xml",
  "rust_xlsxwriter",
  "zip",

@@ -81,12 +81,9 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
             if args.len() != 2 {
                 return Err(arity_err(format!("IFERROR: expected 2 arguments, got {}", args.len())));
             }
-            // Our error model surfaces division-by-zero / other failures
-            // as Value::Empty (ADR-0025 stage-1). IFERROR replaces Empty
-            // results with the fallback. A first-class Value::Error
-            // variant would let us distinguish "blank" from "errored"
-            // — future work.
-            Ok(if matches!(&args[0], Value::Empty) {
+            // ADR-0025: IFERROR swaps in the fallback when its first
+            // argument is an Excel error marker (`Value::Error`).
+            Ok(if matches!(&args[0], Value::Error(_)) {
                 args[1].clone()
             } else {
                 args[0].clone()
@@ -124,15 +121,18 @@ pub fn call_scalar(name: &str, args: &[Value]) -> Result<Value> {
             Ok(Value::String(s))
         }
         "HYPERLINK" => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(arity_err("HYPERLINK: expected 1 or 2 arguments"));
+            // ADR-0039 pins arity at exactly 2 (url, label). The
+            // one-arg URL-as-label form is explicitly deferred to a
+            // later ADR.
+            if args.len() != 2 {
+                return Err(arity_err(format!(
+                    "HYPERLINK: expected 2 arguments, got {}",
+                    args.len()
+                )));
             }
-            // Stage-1 conformance (cell-value comparison) only needs
-            // the display label (arg 2, falling back to the URL when
-            // unset). xl3's `XtlHyperlinkCell` marker — which adds the
-            // actual link record to the output cell — is a Stage-2
-            // concern; revisit when manifest preservation lands.
-            Ok(args.last().cloned().unwrap_or(Value::Empty))
+            let url = args[0].canonical();
+            let text = args[1].canonical();
+            Ok(Value::Hyperlink { url, text })
         }
         "ISBLANK" => {
             if args.len() != 1 {
@@ -326,7 +326,9 @@ fn is_empty_for_ifempty(v: &Value) -> bool {
         | Value::Bool(_)
         | Value::Rows(_)
         | Value::Map(_)
-        | Value::List(_) => false,
+        | Value::List(_)
+        | Value::Error(_)
+        | Value::Hyperlink { .. } => false,
     }
 }
 
@@ -440,11 +442,26 @@ fn excel_serial_to_datetime(serial: f64) -> Result<ExcelDateTime> {
     })
 }
 
-fn today_utc_serial() -> f64 {
-    let secs = std::time::SystemTime::now()
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn current_unix_seconds() -> i64 {
+    // `js_sys::Date::now()` returns ms since epoch as f64.
+    (js_sys::Date::now() / 1000.0) as i64
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn current_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn today_utc_serial() -> f64 {
+    // ADR-0005: TODAY() is the UTC calendar date at render time.
+    // wasm32-unknown-unknown has no clock — `SystemTime::now()` aborts
+    // there, so we route through `Date.now()` via js-sys on wasm and
+    // keep the native path for CLI / Tauri / PyO3 hosts.
+    let secs: i64 = current_unix_seconds();
     let days_since_unix = secs.div_euclid(86_400);
     // Days since 1970-01-01 → civil date (Howard Hinnant).
     let z = days_since_unix + 719_468;

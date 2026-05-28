@@ -21,6 +21,13 @@ rust_xlsxwriter = "0.95"
 # clang can't satisfy when targeting wasm32-unknown-unknown.
 zip = { version = "7", default-features = false, features = ["deflate"] }
 
+# `SystemTime::now()` panics on `wasm32-unknown-unknown` (no WASI
+# clock); pull in js-sys when targeting wasm so `TODAY()` can read
+# `Date.now()` from the host. Native consumers (CLI / Tauri / PyO3)
+# don't compile this dep.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3"
+
 [dev-dependencies]
 
 [lib]

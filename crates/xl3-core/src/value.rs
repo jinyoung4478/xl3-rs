@@ -2,9 +2,10 @@
 //! evaluator. Deliberately simple — strings, numbers, booleans, plus an
 //! explicit Empty so we can distinguish "blank cell" from "empty string".
 //!
-//! Errors propagate up the eval stack as `Err`, not as a `Value::Error`
-//! variant — that matches what the XTL spec calls "expression error" and
-//! avoids the JS-side `__xl3_error__` marker object until later milestones.
+//! Hard expression errors still propagate up the eval stack as `Err`.
+//! `Value::Error` is reserved for "soft" Excel error cells (ADR-0025)
+//! that survive a render — e.g. `1/0` produces `#DIV/0!` instead of
+//! halting the conversion.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,6 +42,17 @@ pub enum Value {
     /// A list — typically a column of `__lists__`. Used by the `in`
     /// and `!in` operators inside `@filter`.
     List(ListHandle),
+    /// ADR-0025 Excel-style error cell marker (`#DIV/0!`, etc.).
+    /// Survives rendering: a single bad row marks one cell, not the
+    /// whole render. `canonical()` yields the error code string so
+    /// concatenation and mixed-text cells display it as text per
+    /// ADR-0025 §"Cell value behavior".
+    Error(String),
+    /// ADR-0039 HYPERLINK marker. Survives only at the top level of a
+    /// single-expression cell; when it flows through `&` or another
+    /// function the link is dropped and the visible `text` is what
+    /// remains.
+    Hyperlink { url: String, text: String },
 }
 
 /// xl3 ADR-0009 / ECMA-262 §6.1.6.1.13: a number's canonical string
@@ -75,6 +87,13 @@ impl Value {
             Value::DateNumber(n) => crate::functions::serial_to_iso_canonical(*n)
                 .unwrap_or_else(|| canonical_number(*n)),
             Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+            Value::Error(code) => code.clone(),
+            // ADR-0039: a hyperlink stringifies to its visible text
+            // (or URL when text is empty), matching Excel's behavior
+            // when a `HYPERLINK` sub-expression flows into `&`.
+            Value::Hyperlink { url, text } => {
+                if text.is_empty() { url.clone() } else { text.clone() }
+            }
             // Internal scaffolding values — defensive empty render.
             Value::Rows(_) | Value::Map(_) | Value::List(_) => String::new(),
         }

@@ -861,13 +861,10 @@ fn eval_binop(op: Op, l: &Value, r: &Value) -> Result<Value> {
             let rn = coerce_number(r)?;
             if rn == 0.0 {
                 // xl3 ADR-0025: division by zero emits a `#DIV/0!` error
-                // cell in the output. Stage-1 conformance compares cell
-                // values via calamine, which surfaces error cells as
-                // Data::Error → Value::Empty in our compare path, so we
-                // emit Empty here. A first-class Value::Error variant
-                // (for stage-2 byte comparison) lands with manifest
-                // preservation later.
-                return Ok(Value::Empty);
+                // cell in the output rather than halting conversion.
+                // The renderer translates `Value::Error("#DIV/0!")` into
+                // an Excel `t="e"` cell so exceljs sees `{ error: ... }`.
+                return Ok(Value::Error("#DIV/0!".to_string()));
             }
             Value::Number(coerce_number(l)? / rn)
         }
@@ -953,6 +950,30 @@ pub(crate) fn coerce_number(v: &Value) -> Result<f64> {
             "cannot coerce a composite Value to a number",
         )
         .into()),
+        // ADR-0025 §"What is NOT specified": error markers are not in
+        // the coercion table — `(1/0) + 5` raises operand-coercion.
+        Value::Error(code) => Err(crate::errors::XtlError::new(
+            crate::errors::code::EVAL_OPERAND_COERCION,
+            format!("cannot coerce error cell {code} to a number"),
+        )
+        .into()),
+        // ADR-0039: a hyperlink in arithmetic context loses its link
+        // shape and behaves like its visible text — fall through to
+        // the string-as-number path.
+        Value::Hyperlink { text, .. } => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(0.0);
+            }
+            let stripped: String = trimmed.chars().filter(|c| *c != ',').collect();
+            stripped.parse::<f64>().map_err(|_| {
+                crate::errors::XtlError::new(
+                    crate::errors::code::EVAL_OPERAND_COERCION,
+                    format!("cannot coerce hyperlink text {text:?} to number"),
+                )
+                .into()
+            })
+        }
     }
 }
 
@@ -965,6 +986,10 @@ pub fn is_truthy(v: &Value) -> bool {
         // Same rule as `is_blank_value` (source-row skip / COUNT /
         // ISBLANK).
         Value::String(s) => !s.chars().all(char::is_whitespace),
+        Value::Error(_) => true,
+        Value::Hyperlink { text, url } => {
+            !text.chars().all(char::is_whitespace) || !url.chars().all(char::is_whitespace)
+        }
         Value::Rows(h) => !h.is_empty(),
         Value::Map(m) => !m.is_empty(),
         Value::List(l) => !l.is_empty(),
