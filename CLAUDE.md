@@ -56,19 +56,14 @@
   - docs.rs 빌드 성공
   - xl3 (TS) README/IMPLEMENTATIONS/examples 갱신
 - **Group A — 21 validation error codes** (2026-05-28) — issue #1. 17 신규 코드 상수, source/cell/eval/filename/inputs/subtotal 경로. xl3-core `4584a89` push. xl3 TS 측 변경 없음 (wasm-bridge 의 prefix 파서가 이미 0.9.0-rc.1 에서 받음)
+- **Group B — 6 of 8 conformance fixtures** (2026-05-28) — xl3-core `44a0953`. `Value::Error` / `Value::Hyperlink` 신규 variants, `coerce_for_num_fmt` Empty→"" 보정, file-group `(blank)` 치환, zero-row source → 0 files, wasm32 `Date.now()` 라우팅, `Value::DateNumber` 기본 numFmt 첨부, write_formula t="e" / write_url_with_text 경로. 통과: 023 031 106 107 125 126.
 - **부가** P2-A~H — multi-file API, preview/inputs, XtlError, runner 확장, cross-impl bench, numFmt 출력, hash @join (528ms→28ms), file-group splitting
 
-**현재 conformance**: `--engine=wasm` **140/148 (94.6%)** stage 1, js baseline 148/148.
+**현재 conformance**: `--engine=wasm` **146/148 (98.6%)** stage 1 (146/154 passed · 2 failed · 6 skipped), js baseline 148/148.
 
-남은 8건 (모두 issue #1 Group B — feature work, 별도 epic):
-- 023 TODAY/clock injection
-- 031 empty-range output filename
-- 063 blank vs value compare
-- 106 `#DIV/0!` error cell
-- 107 `(blank)` group-key placeholder (현재 filename empty error 로 잘림)
-- 125 HYPERLINK cell-link metadata
-- 126 date arithmetic ISO output
-- 143 shared-formula `shared:Ref` marker
+남은 2건 — 둘 다 rust_xlsxwriter writer-side 한계:
+- **063 blank vs value compare** — eval / `coerce_for_num_fmt` 는 이미 `Empty → String("")` 변환을 만들어 두었지만 rust_xlsxwriter `store_string` 이 빈 문자열을 무조건 drop. 해결: XML post-process 레이어 또는 writer 교체.
+- **143 shared-formula `shared:Ref` marker** — rust_xlsxwriter 는 shared-formula write API 가 없음 (write_formula / write_array_formula 뿐). calamine 도 read 시 shared-formula 슬레이브를 full formula text 로 풀어 버려서 share 메타데이터가 우리 파이프라인에서 손실됨. 둘 다 패치해야 함.
 
 상세는 PLAN.md §5, issue #1.
 
@@ -77,7 +72,7 @@
 ## 다음 세션 시작 시 결정 사항
 
 1. **xl3-core 0.1.1 patch 즉시 publish?**
-   - Group A 21건 통과 → 외부 사용자 가시 효과 큼
+   - Group A 21건 + Group B 6건 통과 → 외부 사용자 가시 효과 큼 (98.6% conformance)
    - 또는 0.9.0 정식 cut 직전 (≤ 2026-06-02) 에 묶어서 한 번에
    - xl3-wasm 도 같이 0.1.1 publish 해야 효과 (xl3-core 만 올리면 wasm 경로 fix 안 닿음)
    - 권장: rc soak 종료 (2026-06-02) 직전 0.1.1 batch publish — 시간 절약 + 일관성
@@ -87,10 +82,11 @@
    - 외부 critical issue 없으면 latest 승격
    - 절차: RELEASING.md §"Final 1.0.0 cut" 의 minor variant
 
-3. **Group B 8건**
-   - 정식 0.9.0 이후 0.9.1 ~ 0.10.0 사이클로 점진
-   - 125 HYPERLINK / 143 shared formula 는 features.md 에 spec 보강 필요할 수도
-   - 107 은 Group A 의 filename-empty error 가 너무 적극적으로 발사된 부수 영향 — `(blank)` substitution 먼저 들어가야 자연 해소
+3. **남은 Group B 2건 — rust_xlsxwriter 한계 작업**
+   - 063 / 143 둘 다 rust_xlsxwriter 자체의 빈 문자열 / shared-formula write API 부재가 블로커.
+   - 짧게 가는 길: XLSX XML post-process 레이어 (xl3-core/src/output.rs 뒷단). store_string drop 회피 + shared-formula 슬레이브 `<c><f t="shared" si="..."/></c>` 주입.
+   - 길게 가는 길: rust_xlsxwriter PR 또는 writer 교체 후보 (umya-spreadsheet?). 별도 epic.
+   - 정식 0.9.0 이후 0.9.1 사이클로.
 
 4. **보안 정리 (사용자 액션)**
    - https://crates.io/settings/tokens — 이번 publish 토큰 revoke
