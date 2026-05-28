@@ -48,18 +48,58 @@
 - **외부 검증 4건** (2026-05-26) — conformance 측정 (110/148→119/148), 매니페스트 stage 2 진단, 70MB 재측정 (퇴행 없음), 300 회 메모리 안정
 - **Native formula preservation** (2026-05-26) — ADR-0021/0046. 097, 129, 142, 144 통과. `CellSource::CellFormula` 추가, calamine `worksheet_formula` 연동, iteration bounds 합집합, col_range 인접 확장
 - **Error code 인프라** (2026-05-26) — `XtlError { code }` propagation 완성. arity / xlookup 코드 정착, wasm-bridge 가 `[xl3/...]` prefix → JS Error `.code` 변환
-- **xl3-core 0.1.0 release 준비** (2026-05-26) — Cargo.toml 메타 (description/keywords/categories/readme), README, CHANGELOG, lib.rs doc
+- **publish 라운드** (2026-05-26~27):
+  - crates.io `xl3-core` 0.1.0 + `xl3` 0.0.1 (placeholder)
+  - npm `xl3-wasm` 0.1.0 + `@jinyoung4478/xl3` 0.9.0-rc.1 (rc tag, latest 0.8.0 유지)
+  - GitHub Release `v0.9.0-rc.1` (prerelease) + tags `xl3-core-v0.1.0`, `xl3-wasm-v0.1.0`
+  - End-to-end smoke test 통과 (js/wasm/auto 3 모드)
+  - docs.rs 빌드 성공
+  - xl3 (TS) README/IMPLEMENTATIONS/examples 갱신
+- **Group A — 21 validation error codes** (2026-05-28) — issue #1. 17 신규 코드 상수, source/cell/eval/filename/inputs/subtotal 경로. xl3-core `4584a89` push. xl3 TS 측 변경 없음 (wasm-bridge 의 prefix 파서가 이미 0.9.0-rc.1 에서 받음)
 - **부가** P2-A~H — multi-file API, preview/inputs, XtlError, runner 확장, cross-impl bench, numFmt 출력, hash @join (528ms→28ms), file-group splitting
 
-**현재 conformance**: `--engine=wasm` 119/148 (js baseline 148/148) — 79.7%.
+**현재 conformance**: `--engine=wasm` **140/148 (94.6%)** stage 1, js baseline 148/148.
 
-남은 검증:
-- 추가 에러 코드 sites (~20 fixtures) — incremental 0.x 작업
-- HYPERLINK 함수 / shared formula — 별도 기능
-- Border / CF / DV / defined names manifest — incremental
-- crates.io 실제 publish (메타 준비됨)
+남은 8건 (모두 issue #1 Group B — feature work, 별도 epic):
+- 023 TODAY/clock injection
+- 031 empty-range output filename
+- 063 blank vs value compare
+- 106 `#DIV/0!` error cell
+- 107 `(blank)` group-key placeholder (현재 filename empty error 로 잘림)
+- 125 HYPERLINK cell-link metadata
+- 126 date arithmetic ISO output
+- 143 shared-formula `shared:Ref` marker
 
-상세는 PLAN.md §5.
+상세는 PLAN.md §5, issue #1.
+
+---
+
+## 다음 세션 시작 시 결정 사항
+
+1. **xl3-core 0.1.1 patch 즉시 publish?**
+   - Group A 21건 통과 → 외부 사용자 가시 효과 큼
+   - 또는 0.9.0 정식 cut 직전 (≤ 2026-06-02) 에 묶어서 한 번에
+   - xl3-wasm 도 같이 0.1.1 publish 해야 효과 (xl3-core 만 올리면 wasm 경로 fix 안 닿음)
+   - 권장: rc soak 종료 (2026-06-02) 직전 0.1.1 batch publish — 시간 절약 + 일관성
+
+2. **xl3 TS 0.9.0 정식 cut**
+   - 7-day rc soak 데드라인: **2026-06-02** (오늘 5/28 기준 5일 남음)
+   - 외부 critical issue 없으면 latest 승격
+   - 절차: RELEASING.md §"Final 1.0.0 cut" 의 minor variant
+
+3. **Group B 8건**
+   - 정식 0.9.0 이후 0.9.1 ~ 0.10.0 사이클로 점진
+   - 125 HYPERLINK / 143 shared formula 는 features.md 에 spec 보강 필요할 수도
+   - 107 은 Group A 의 filename-empty error 가 너무 적극적으로 발사된 부수 영향 — `(blank)` substitution 먼저 들어가야 자연 해소
+
+4. **보안 정리 (사용자 액션)**
+   - https://crates.io/settings/tokens — 이번 publish 토큰 revoke
+   - https://www.npmjs.com/settings/jinyoung4478/tokens — npm 토큰 revoke
+
+5. **유사 작업 후보**
+   - xl3 (TS) 측 7 언어 README "What's new" 동기화 (ko / ja / zh-CN / zh-TW / es)
+   - website/docusaurus Acceleration 가이드 페이지
+   - xl3-rs 측 GitHub Release 노트 `xl3-core-v0.1.0`, `xl3-wasm-v0.1.0` (현재 tag 만, page 없음)
 
 ---
 
