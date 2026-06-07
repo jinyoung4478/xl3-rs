@@ -61,7 +61,7 @@
 - **Issue #2 검증 — ADR-0066 ghost-style** (2026-06-07) — wasm core 는 `compose_iteration_cells` row composition 이라 고스트 구조적 불가 확인 (업스트림 0.8.1 주장 검증 완료). 회귀 테스트 3건 `tests/ghost_style.rs` (plain / grouped / 348행, styles.xml+sheet XML 레벨 ink 검사). 부수 발견:
   - **수정됨** — planner 의 styles/manifest 조회가 value-range 상대 좌표 사용 (`fef5238`). A1 비시작 템플릿에서 numFmt/manifest 스타일 전부 손실되던 버그.
   - **미해결 (issue #3)** — grouped 경로 `render_grouped` 가 side_rows 를 그룹별 iter_idx 로 합성 → side summary 가 그룹 수만큼 중복. JS 는 원래 행에 1회 복원. 값 레이어 divergence. 업스트림 fixture 요청 **xl3#51** 등록 (2026-06-07) — fixture 착지 후 수정, 0.1.1 탑승 목표.
-  - **미해결 (stage-2 gap)** — `CellSource::Literal` 은 style_idx 를 받지 못함 → literal 셀의 manifest 스타일 손실.
+  - **수정됨** (`19a79bd`) — `CellSource::Literal` 도 manifest style_idx 를 받음 → literal 헤더/사이드 셀 스타일 보존 (stage-2 gap 해소).
   - 참고: native conformance 하니스가 sibling xl3 checkout (Phase 2 / 0.8.x 상태로 이동) 기준 142/143/144 실패 — 이번 변경 전부터 동일 (변경 전후 66/69). corpus 버전 흔들림 주의.
 
 **현재 conformance**: `--engine=wasm` **146/148 (98.6%)** stage 1 (146/154 passed · 2 failed · 6 skipped), js baseline 148/148.
@@ -92,11 +92,7 @@
    - 길게 가는 길: rust_xlsxwriter PR 또는 writer 교체 후보 (umya-spreadsheet?). 별도 epic.
    - 정식 0.9.0 이후 0.9.1 사이클로.
 
-4. **보안 정리 (사용자 액션)**
-   - https://crates.io/settings/tokens — 이번 publish 토큰 revoke
-   - https://www.npmjs.com/settings/jinyoung4478/tokens — npm 토큰 revoke
-
-5. **유사 작업 후보**
+4. **유사 작업 후보**
    - xl3 (TS) 측 7 언어 README "What's new" 동기화 (ko / ja / zh-CN / zh-TW / es)
    - website/docusaurus Acceleration 가이드 페이지
    - xl3-rs 측 GitHub Release 노트 `xl3-core-v0.1.0`, `xl3-wasm-v0.1.0` (현재 tag 만, page 없음)
