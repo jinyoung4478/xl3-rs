@@ -29,6 +29,11 @@ zip = { version = "7", default-features = false, features = ["deflate"] }
 js-sys = "0.3"
 
 [dev-dependencies]
+# tests/ghost_style.rs inspects the rendered XLSX at the XML level
+# (styles.xml fills/borders + worksheet cell elements) — same crates
+# the lib already depends on, so this adds nothing to the build tree.
+quick-xml = "0.39"
+zip = { version = "7", default-features = false, features = ["deflate"] }
 
 [lib]
 path = "src/lib.rs"
