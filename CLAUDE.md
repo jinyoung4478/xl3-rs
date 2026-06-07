@@ -60,9 +60,10 @@
 - **부가** P2-A~H — multi-file API, preview/inputs, XtlError, runner 확장, cross-impl bench, numFmt 출력, hash @join (528ms→28ms), file-group splitting
 - **Issue #2 검증 — ADR-0066 ghost-style** (2026-06-07) — wasm core 는 `compose_iteration_cells` row composition 이라 고스트 구조적 불가 확인 (업스트림 0.8.1 주장 검증 완료). 회귀 테스트 3건 `tests/ghost_style.rs` (plain / grouped / 348행, styles.xml+sheet XML 레벨 ink 검사). 부수 발견:
   - **수정됨** — planner 의 styles/manifest 조회가 value-range 상대 좌표 사용 (`fef5238`). A1 비시작 템플릿에서 numFmt/manifest 스타일 전부 손실되던 버그.
-  - **미해결 (issue #3)** — grouped 경로 `render_grouped` 가 side_rows 를 그룹별 iter_idx 로 합성 → side summary 가 그룹 수만큼 중복. JS 는 원래 행에 1회 복원. 값 레이어 divergence. 업스트림 fixture 요청 **xl3#51** 등록 (2026-06-07) — fixture 착지 후 수정, 0.1.1 탑승 목표.
-  - **수정됨** (`19a79bd`) — `CellSource::Literal` 도 manifest style_idx 를 받음 → literal 헤더/사이드 셀 스타일 보존 (stage-2 gap 해소).
+  - **미해결 (issue #3)** — grouped 경로 `render_grouped` 가 side_rows 를 그룹별 iter_idx 로 합성 → side summary 가 그룹 수만큼 중복. JS 는 원래 행에 1회 복원. 값 레이어 divergence. 업스트림 fixture 요청 **xl3#51** 등록 (2026-06-07) — fixture 착지 후 수정, 다음 patch 탑승 목표.
+  - **수정됨** (`19a79bd`) — `CellSource::Literal` 도 manifest style_idx 를 받음 → literal 헤더/사이드 셀 스타일 보존 (stage-2 gap 해소). **breaking** (variant 형태 변경) → 0.2.0 사유.
   - 참고: native conformance 하니스가 sibling xl3 checkout (Phase 2 / 0.8.x 상태로 이동) 기준 142/143/144 실패 — 이번 변경 전부터 동일 (변경 전후 66/69). corpus 버전 흔들림 주의.
+- **0.2.0 publish 라운드** (2026-06-07) — crates.io `xl3-core` 0.2.0 + npm `xl3-wasm` 0.2.0 (latest). 146/148 라인이 공개 패키지에 도달. 0.1.1 예정이었으나 Literal variant 변경이 semver-breaking 이라 0.2.0 으로. wasm 번들 1.81MB raw / 0.75MB gz (KPI <2MB 통과), Node 스모크 통과. tags `xl3-core-v0.2.0` / `xl3-wasm-v0.2.0` + GitHub Release 페이지 2건. issue #1 에 publish 보고 + close 제안 (063/143 분리 issue 제안 포함).
 
 **현재 conformance**: `--engine=wasm` **146/148 (98.6%)** stage 1 (146/154 passed · 2 failed · 6 skipped), js baseline 148/148.
 
@@ -76,15 +77,12 @@
 
 ## 다음 세션 시작 시 결정 사항
 
-1. **xl3-core 0.1.1 patch 즉시 publish?**
-   - Group A 21건 + Group B 6건 + planner 좌표 fix (`fef5238`) → 외부 사용자 가시 효과 큼 (98.6% conformance)
-   - xl3-wasm 도 같이 0.1.1 publish 해야 효과 (xl3-core 만 올리면 wasm 경로 fix 안 닿음)
-   - 권장: rc soak 종료 (**2026-06-16**) 직전 0.1.1 batch publish — 시간 절약 + 일관성. 남은 기간에 issue #3 / Literal style_idx fix 가 더 실릴 수도 있음
+1. **issue #1 close + 분리** — publish 보고 코멘트에 제안해 둠. 063/143 writer-side epic 용 좁은 issue + stage-2/manifest parity (border 포함) issue 로 분리 후 #1 close. 사용자 승인 대기.
 
 2. **xl3 TS 0.9.0 정식 cut** — **xl3 issue #48 이 canonical tracker**
    - rc soak 은 ROADMAP **G23 기준 ≥21일** (7일은 stale 문서였음, `52e56b3` 에서 정정). v0.9.0-rc.1 publish 2026-05-26 → soak 종료 **2026-06-16**
    - soak 건강: ADR-0066 ghost 버그 (0.8.1 backport) 는 G23 정의상 critical 아님 → soak clock 리셋 없음. wasm conformance gap 은 opt-in 이라 G23 게이트 아님
-   - 결정/절차 체크리스트는 xl3#48 본문 참조 (06-16 이후 실행)
+   - 결정/절차 체크리스트는 xl3#48 본문 참조 (06-16 이후 실행). xl3 (TS) 측 작업은 사용자가 별도 진행
 
 3. **남은 Group B 2건 — rust_xlsxwriter 한계 작업**
    - 063 / 143 둘 다 rust_xlsxwriter 자체의 빈 문자열 / shared-formula write API 부재가 블로커.
@@ -92,10 +90,9 @@
    - 길게 가는 길: rust_xlsxwriter PR 또는 writer 교체 후보 (umya-spreadsheet?). 별도 epic.
    - 정식 0.9.0 이후 0.9.1 사이클로.
 
-4. **유사 작업 후보**
-   - xl3 (TS) 측 7 언어 README "What's new" 동기화 (ko / ja / zh-CN / zh-TW / es)
-   - website/docusaurus Acceleration 가이드 페이지
-   - xl3-rs 측 GitHub Release 노트 `xl3-core-v0.1.0`, `xl3-wasm-v0.1.0` (현재 tag 만, page 없음)
+4. **issue #3 — grouped side-row 중복** — xl3#51 fixture 대기. 착지하면 `render_grouped` 수정 후 0.2.x patch.
+
+5. **stage-2 후보** — border manifest 지원 (Rust `StyleSpec` 에 border 없음 + TS 추출기도 미전송, 양쪽 공동 작업)
 
 ---
 
