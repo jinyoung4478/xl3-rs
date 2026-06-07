@@ -202,7 +202,14 @@ fn parse_a1_part(s: &str) -> Option<(Option<usize>, Option<usize>)> {
 #[derive(Debug, Clone)]
 pub enum CellSource {
     Empty,
-    Literal(Value),
+    /// A plain (non-template) cell value. `style_idx` mirrors
+    /// `Template` / `CellFormula`: the host-manifest style stamped at
+    /// planning time, so literal header/side cells keep their fonts
+    /// and fills in the output (stage-2 surface).
+    Literal {
+        value: Value,
+        style_idx: Option<usize>,
+    },
     /// Contains at least one `{{ ... }}` expression block. `num_fmt`
     /// is the classified numFmt of the underlying *template* cell,
     /// used by ADR-0003 single-expression coercion at render time.
@@ -1011,7 +1018,10 @@ fn build_row_plans_for_range(
                             style_idx,
                         }
                     } else {
-                        CellSource::Literal(Value::from_calamine(other))
+                        CellSource::Literal {
+                            value: Value::from_calamine(other),
+                            style_idx: style_idx_at(r, c),
+                        }
                     }
                 }
             };

@@ -48,11 +48,11 @@ fn add_config(wb: &mut Workbook) {
 }
 
 /// Headers + a column-scoped A:B data block, with a side summary
-/// block BELOW the block's template row. The side cells reference
-/// `__inputs__` (not the source row) so they stay side rows in the
-/// planner AND get a manifest style index stamped — `CellSource::
-/// Literal` doesn't carry one, so a literal-only side block would
-/// make the ghost check vacuous.
+/// block BELOW the block's template row. The side cells mix template
+/// cells (`{{ __inputs__[...] }}` — not source-row refs, so they stay
+/// side rows in the planner) and literal cells: both kinds carry a
+/// manifest style index, and both must keep value + ink together
+/// through composition without ever ghosting.
 fn plain_template() -> Vec<u8> {
     let mut wb = Workbook::new();
     add_config(&mut wb);
@@ -368,6 +368,28 @@ fn plain_expansion_leaves_no_side_ghost() {
     assert!(
         cells.get(&(row, 15)).is_some_and(|c| c.inked && c.has_value),
         "the restored TOTAL cell must keep its fill"
+    );
+
+    // Literal side cells keep their manifest ink too (CellSource::
+    // Literal carries a style_idx since the stage-2 literal-style fix).
+    let taxes: Vec<(u32, u32)> = values
+        .iter()
+        .filter(|(_, d)| matches!(d, Data::String(s) if s == "TAX"))
+        .map(|(pos, _)| *pos)
+        .collect();
+    assert_eq!(taxes.len(), 1, "TAX must land exactly once: {taxes:?}");
+    let (tax_row, _) = taxes[0];
+    assert!(
+        matches!(values.get(&(tax_row, 16)), Some(Data::Float(f)) if *f == 550.0),
+        "companion 550 must sit next to TAX"
+    );
+    assert!(
+        cells.get(&(tax_row, 15)).is_some_and(|c| c.inked && c.has_value),
+        "the literal TAX cell must keep its fill"
+    );
+    assert!(
+        cells.get(&(tax_row, 16)).is_some_and(|c| c.inked && c.has_value),
+        "the literal 550 cell must keep its fill"
     );
 }
 

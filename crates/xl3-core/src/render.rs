@@ -996,7 +996,7 @@ fn render_subtotal_row(
     for cell in cells {
         let value = match cell {
             CellSource::Empty => Value::Empty,
-            CellSource::Literal(v) => v.clone(),
+            CellSource::Literal { value, .. } => value.clone(),
             CellSource::CellFormula { cached, .. } => cached.clone(),
             CellSource::Template { text, num_fmt, format_code, .. } => {
                 coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt, format_code.as_deref())?
@@ -1231,7 +1231,7 @@ fn render_expand_right_row(
     for cell in cells {
         match cell {
             CellSource::Empty => out.push(Value::Empty),
-            CellSource::Literal(v) => out.push(v.clone()),
+            CellSource::Literal { value, .. } => out.push(value.clone()),
             CellSource::CellFormula { cached, .. } => out.push(cached.clone()),
             CellSource::Template { text, num_fmt, format_code, .. } => {
                 if emitted_expansion {
@@ -1276,6 +1276,7 @@ fn cell_style_idx(cell: &CellSource) -> Option<usize> {
     match cell {
         CellSource::Template { style_idx, .. } => *style_idx,
         CellSource::CellFormula { style_idx, .. } => *style_idx,
+        CellSource::Literal { style_idx, .. } => *style_idx,
         _ => None,
     }
 }
@@ -1340,7 +1341,7 @@ fn render_static_row(
     for c in cells {
         let value = match c {
             CellSource::Empty => Value::Empty,
-            CellSource::Literal(v) => v.clone(),
+            CellSource::Literal { value, .. } => value.clone(),
             CellSource::CellFormula { cached, .. } => cached.clone(),
             CellSource::Template { text, num_fmt, format_code, .. } => {
                 coerce_for_num_fmt(eval_cell(text, &ctx)?, *num_fmt, format_code.as_deref())?
@@ -1366,7 +1367,7 @@ fn render_template_row(cells: &[CellSource], ctx: &EvalContext) -> Result<Vec<Va
     for cell in cells {
         match cell {
             CellSource::Empty => out.push(Value::Empty),
-            CellSource::Literal(v) => out.push(v.clone()),
+            CellSource::Literal { value, .. } => out.push(value.clone()),
             CellSource::CellFormula { cached, .. } => out.push(cached.clone()),
             CellSource::Template { text, num_fmt, format_code, .. } => {
                 out.push(coerce_for_num_fmt(eval_cell(text, ctx)?, *num_fmt, format_code.as_deref())?)
