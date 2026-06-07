@@ -77,15 +77,14 @@
 ## 다음 세션 시작 시 결정 사항
 
 1. **xl3-core 0.1.1 patch 즉시 publish?**
-   - Group A 21건 + Group B 6건 통과 → 외부 사용자 가시 효과 큼 (98.6% conformance)
-   - 또는 0.9.0 정식 cut 직전 (≤ 2026-06-02) 에 묶어서 한 번에
+   - Group A 21건 + Group B 6건 + planner 좌표 fix (`fef5238`) → 외부 사용자 가시 효과 큼 (98.6% conformance)
    - xl3-wasm 도 같이 0.1.1 publish 해야 효과 (xl3-core 만 올리면 wasm 경로 fix 안 닿음)
-   - 권장: rc soak 종료 (2026-06-02) 직전 0.1.1 batch publish — 시간 절약 + 일관성
+   - 권장: rc soak 종료 (**2026-06-16**) 직전 0.1.1 batch publish — 시간 절약 + 일관성. 남은 기간에 issue #3 / Literal style_idx fix 가 더 실릴 수도 있음
 
-2. **xl3 TS 0.9.0 정식 cut**
-   - 7-day rc soak 데드라인: **2026-06-02** (오늘 5/28 기준 5일 남음)
-   - 외부 critical issue 없으면 latest 승격
-   - 절차: RELEASING.md §"Final 1.0.0 cut" 의 minor variant
+2. **xl3 TS 0.9.0 정식 cut** — **xl3 issue #48 이 canonical tracker**
+   - rc soak 은 ROADMAP **G23 기준 ≥21일** (7일은 stale 문서였음, `52e56b3` 에서 정정). v0.9.0-rc.1 publish 2026-05-26 → soak 종료 **2026-06-16**
+   - soak 건강: ADR-0066 ghost 버그 (0.8.1 backport) 는 G23 정의상 critical 아님 → soak clock 리셋 없음. wasm conformance gap 은 opt-in 이라 G23 게이트 아님
+   - 결정/절차 체크리스트는 xl3#48 본문 참조 (06-16 이후 실행)
 
 3. **남은 Group B 2건 — rust_xlsxwriter 한계 작업**
    - 063 / 143 둘 다 rust_xlsxwriter 자체의 빈 문자열 / shared-formula write API 부재가 블로커.
