@@ -903,6 +903,27 @@ fn build_row_plans_for_range(
             })
         })
     };
+    // styles.xml cell-xf keys and manifest cell keys are *absolute*
+    // sheet coordinates (parsed from `r="P5"` refs / emitted 0-based
+    // absolute by the TS extractor). The loop's (r, c) are relative
+    // to the value range — translate exactly like `formula_at` does,
+    // or any template whose used range doesn't start at A1 loses its
+    // numFmt coercion and manifest styles.
+    let format_code_at = |r: usize, c: usize| -> Option<String> {
+        styles.format_code(
+            sheet_name,
+            value_start.0 + r as u32,
+            value_start.1 + c as u32,
+        )
+    };
+    let style_idx_at = |r: usize, c: usize| -> Option<usize> {
+        manifest.and_then(|m| {
+            m.cells.get(sheet_name).and_then(|map| {
+                map.get(&(value_start.0 + r as u32, value_start.1 + c as u32))
+                    .copied()
+            })
+        })
+    };
     let mut row_plans: Vec<RowPlan> = Vec::with_capacity(rows);
     let mut pending_direction = Direction::Down;
     let mut pending_directives: Vec<Directive> = Vec::new();
@@ -936,12 +957,8 @@ fn build_row_plans_for_range(
                     any_cell = true;
                     directive_only = false;
                     let formula_text = formula_here.unwrap();
-                    let format_code = styles.format_code(sheet_name, r as u32, c as u32);
-                    let style_idx = manifest.and_then(|m| {
-                        m.cells
-                            .get(sheet_name)
-                            .and_then(|map| map.get(&(r as u32, c as u32)).copied())
-                    });
+                    let format_code = format_code_at(r, c);
+                    let style_idx = style_idx_at(r, c);
                     CellSource::CellFormula {
                         text: formula_text,
                         cached: Value::Empty,
@@ -963,16 +980,12 @@ fn build_row_plans_for_range(
                         if template_depends_on_source_row(s, &exclude_named) {
                             has_source_template = true;
                         }
-                        let format_code = styles.format_code(sheet_name, r as u32, c as u32);
+                        let format_code = format_code_at(r, c);
                         let num_fmt = format_code
                             .as_deref()
                             .map(styles::classify_num_fmt)
                             .unwrap_or(NumFmtKind::General);
-                        let style_idx = manifest.and_then(|m| {
-                            m.cells
-                                .get(sheet_name)
-                                .and_then(|map| map.get(&(r as u32, c as u32)).copied())
-                        });
+                        let style_idx = style_idx_at(r, c);
                         CellSource::Template {
                             text: s.clone(),
                             num_fmt,
@@ -989,12 +1002,8 @@ fn build_row_plans_for_range(
                     // the same applies to formulas inside expansion
                     // blocks — the text is cloned verbatim per row.
                     if let Some(formula_text) = formula_here {
-                        let format_code = styles.format_code(sheet_name, r as u32, c as u32);
-                        let style_idx = manifest.and_then(|m| {
-                            m.cells
-                                .get(sheet_name)
-                                .and_then(|map| map.get(&(r as u32, c as u32)).copied())
-                        });
+                        let format_code = format_code_at(r, c);
+                        let style_idx = style_idx_at(r, c);
                         CellSource::CellFormula {
                             text: formula_text,
                             cached: Value::from_calamine(other),
