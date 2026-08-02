@@ -683,6 +683,11 @@ fn render_sheet(
                 let rows_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(effective.clone());
 
                 let mut global_idx = 0usize;
+                // ADR-0066: outside-block cells keep their original row
+                // position, so `side_rows` is keyed by the block's
+                // *output* offset — not by the per-group iteration
+                // index. `block_start` is that offset's origin.
+                let block_start = rows.len();
                 let emit_expansion =
                     |group_rows: &Vec<HashMap<String, Value>>,
                      rows: &mut Vec<Vec<Value>>,
@@ -691,7 +696,7 @@ fn render_sheet(
                      formulas: &mut Vec<Vec<Option<String>>>,
                      global_idx: &mut usize|
                      -> Result<()> {
-                        for (iter_idx, source_row) in group_rows.iter().enumerate() {
+                        for source_row in group_rows.iter() {
                             *global_idx += 1;
                             let mut ctx: EvalContext = source_row.clone();
                             inject_rows(&mut ctx, Arc::clone(&rows_handle));
@@ -705,8 +710,9 @@ fn render_sheet(
                                 );
                             }
                             inject_named_sources(&mut ctx, named_sources);
+                            let block_off = rows.len() - block_start;
                             let effective_cells = compose_iteration_cells(
-                                cells, side_rows, *col_range, iter_idx,
+                                cells, side_rows, *col_range, block_off,
                             );
                             rows.push(render_template_row(&effective_cells, &ctx)?);
                             formats.push(row_formats(&effective_cells));
@@ -725,21 +731,8 @@ fn render_sheet(
                         &mut formulas,
                         &mut global_idx,
                     )?;
-                    let consumed = effective.len().saturating_sub(1);
-                    if side_rows.len() > consumed {
-                        for extra in &side_rows[consumed..] {
-                            rows.push(render_static_row(
-                                extra,
-                                inputs_value,
-                                lists_value,
-                                named_sources,
-                                group_keys,
-                            )?);
-                            formats.push(row_formats(extra));
-                            style_indices.push(row_style_indices(extra));
-                            formulas.push(row_formulas(extra));
-                        }
-                    }
+                    // Unreachable while `@subtotal` outside `@group` is
+                    // rejected above; kept as the non-grouped shape.
                     for subtotal_cells in subtotal_rows {
                         rows.push(render_subtotal_row(
                             subtotal_cells,
@@ -761,6 +754,7 @@ fn render_sheet(
                         subtotal_rows,
                         side_rows,
                         *col_range,
+                        block_start,
                         &mut rows,
                         &mut formats,
                         &mut style_indices,
@@ -772,6 +766,25 @@ fn render_sheet(
                         named_sources,
                         active_source.as_deref(),
                     )?;
+                }
+                // ADR-0066: side rows whose original position falls past
+                // the block's last emitted row land after it, in order —
+                // `side_rows` density keeps offset == index + 1.
+                let emitted = rows.len() - block_start;
+                let consumed = emitted.saturating_sub(1);
+                if side_rows.len() > consumed {
+                    for extra in &side_rows[consumed..] {
+                        rows.push(render_static_row(
+                            extra,
+                            inputs_value,
+                            lists_value,
+                            named_sources,
+                            group_keys,
+                        )?);
+                        formats.push(row_formats(extra));
+                        style_indices.push(row_style_indices(extra));
+                        formulas.push(row_formulas(extra));
+                    }
                 }
             }
             RowPlan::ExpandRight { cells, directives } => {
@@ -905,6 +918,9 @@ fn render_grouped(
     subtotal_rows: &[Vec<CellSource>],
     side_rows: &[Vec<CellSource>],
     col_range: Option<(usize, usize)>,
+    // Index in `out_rows` where this block's emission started —
+    // `side_rows` is keyed by the offset from it (ADR-0066).
+    block_start: usize,
     out_rows: &mut Vec<Vec<Value>>,
     out_formats: &mut Vec<Vec<Option<String>>>,
     out_style_indices: &mut Vec<Vec<Option<usize>>>,
@@ -917,7 +933,7 @@ fn render_grouped(
     active_source: Option<&str>,
 ) -> Result<()> {
     if depth == group_fields.len() {
-        for (iter_idx, source_row) in rows.iter().enumerate() {
+        for source_row in rows.iter() {
             *global_idx += 1;
             let mut ctx: EvalContext = source_row.clone();
             inject_rows(&mut ctx, Arc::clone(rows_handle));
@@ -928,8 +944,9 @@ fn render_grouped(
                 ctx.insert(name.to_string(), Value::Map(Arc::new(source_row.clone())));
             }
             inject_named_sources(&mut ctx, named_sources);
+            let block_off = out_rows.len() - block_start;
             let effective_cells =
-                compose_iteration_cells(cells, side_rows, col_range, iter_idx);
+                compose_iteration_cells(cells, side_rows, col_range, block_off);
             out_rows.push(render_template_row(&effective_cells, &ctx)?);
             out_formats.push(row_formats(&effective_cells));
             out_style_indices.push(row_style_indices(&effective_cells));
@@ -947,6 +964,7 @@ fn render_grouped(
             subtotal_rows,
             side_rows,
             col_range,
+            block_start,
             out_rows,
             out_formats,
             out_style_indices,
@@ -961,16 +979,21 @@ fn render_grouped(
         let slot = group_fields.len() - 1 - depth;
         if slot < subtotal_rows.len() {
             let group_handle: Arc<Vec<HashMap<String, Value>>> = Arc::new(group.clone());
+            // A subtotal row occupies one output offset like any other
+            // block row, so an outside-block cell pinned to that offset
+            // rides along with it (ADR-0066).
+            let block_off = out_rows.len() - block_start;
+            let cells = overlay_side_cells(&subtotal_rows[slot], side_rows, col_range, block_off);
             out_rows.push(render_subtotal_row(
-                &subtotal_rows[slot],
+                &cells,
                 &group_handle,
                 inputs_value,
                 lists_value,
                 named_sources,
             )?);
-            out_formats.push(row_formats(&subtotal_rows[slot]));
-            out_style_indices.push(row_style_indices(&subtotal_rows[slot]));
-            out_formulas.push(row_formulas(&subtotal_rows[slot]));
+            out_formats.push(row_formats(&cells));
+            out_style_indices.push(row_style_indices(&cells));
+            out_formulas.push(row_formulas(&cells));
         }
     }
     Ok(())
@@ -1013,6 +1036,35 @@ fn render_subtotal_row(
         out.push(value);
     }
     Ok(out)
+}
+
+/// Merge the outside-range cells pinned to `block_off` onto a row the
+/// block emits itself (a subtotal row). Unlike `compose_iteration_cells`
+/// this never clears the base row's own outside cells — only non-empty
+/// side content overwrites them.
+fn overlay_side_cells(
+    base: &[CellSource],
+    side_rows: &[Vec<CellSource>],
+    col_range: Option<(usize, usize)>,
+    block_off: usize,
+) -> Vec<CellSource> {
+    let Some((lo, hi)) = col_range else {
+        return base.to_vec();
+    };
+    let Some(side) = block_off.checked_sub(1).and_then(|i| side_rows.get(i)) else {
+        return base.to_vec();
+    };
+    let mut out = base.to_vec();
+    for (i, cell) in side.iter().enumerate() {
+        if matches!(cell, CellSource::Empty) || (i >= lo && i <= hi) {
+            continue;
+        }
+        if i >= out.len() {
+            out.resize(i + 1, CellSource::Empty);
+        }
+        out[i] = cell.clone();
+    }
+    out
 }
 
 /// Build the cell list for one expansion iteration. Inside the

@@ -1,12 +1,38 @@
 # xl3-core CHANGELOG
 
+## Unreleased
+
+Re-synced against the xl3 corpus as of upstream `7b0ce42` (2026-08-02,
+169 stage-1 fixtures, up from 154). Stage 1 via `--engine=wasm`:
+**160 / 169 passed · 2 failed · 7 stage-2 skipped**, against a JS
+reference baseline of 162 / 169. The two failures are still 063
+(blank-vs-value) and 143 (shared-formula markers) — both rust_xlsxwriter
+writer-side limits.
+
+### Fixed
+
+- **ADR-0066 grouped side cells** (fixture 157, [xl3-rs#3]): outside-block
+  cells next to a `@group`/`@subtotal` block were composed per group
+  iteration, so a side summary was duplicated once per group and any
+  side row past the block's last data row was dropped. `side_rows` is
+  now keyed by the block's *output* offset — subtotal rows included —
+  which is what pins outside cells to their original row position.
+- **ADR-0073 / ADR-0046 formula-cache markers** (fixture 160): a native
+  formula's cached `<v>` was read as template text. A `@subtotal` label
+  formula whose cache happened to hold `{{ [Col] }} / Subtotal` demoted
+  its own row to a second data-row template (upstream issue xl3#66's
+  self-corruption path). Marker and directive recognition now skips
+  formula cells entirely, matching the renderer.
+
+[xl3-rs#3]: https://github.com/xl3-lang/xl3-rs/issues/3
+
 ## 0.2.0 — 2026-06-07
 
 Conformance jump: **119 → 146 / 148** xl3 stage-1 fixtures pass via
 the wasm path (vs the xl3 0.9.0-rc.1 corpus). The two remaining
 fixtures (063 blank-vs-value compare, 143 shared-formula markers) are
 blocked on rust_xlsxwriter writer-side limitations — tracked in
-[xl3-rs#1](https://github.com/jinyoung4478/xl3-rs/issues/1).
+[xl3-rs#1](https://github.com/xl3-lang/xl3-rs/issues/1).
 
 ### Breaking
 

@@ -955,20 +955,29 @@ fn build_row_plans_for_range(
             // Native Excel formula peek: calamine reads the cached
             // result via `range.get`, which can be Empty when the
             // formula's inputs reference cells we haven't filled yet
-            // (e.g. `=B2*2` over a template `{{ [Amount] }}`). Only
-            // skip ahead to the per-variant branches once we've
-            // confirmed there's no formula text at this position.
+            // (e.g. `=B2*2` over a template `{{ [Amount] }}`).
             let formula_here = formula_at(r, c);
             let cell = match range.get((r, c)) {
-                None | Some(CData::Empty) if formula_here.is_some() => {
+                // ADR-0021: a native Excel formula in a template cell
+                // preserves its text (ADR-0046: inside expansion blocks
+                // too — cloned verbatim per row). ADR-0073: this arm
+                // comes first because marker and directive recognition
+                // ignores formula cells entirely. An Excel round-trip
+                // can cache `{{ [Col] }}`-looking text into a formula's
+                // <v>; reading that cache as template text lets a label
+                // formula demote its own row (xl3#66 self-corruption).
+                _ if formula_here.is_some() => {
                     any_cell = true;
                     directive_only = false;
-                    let formula_text = formula_here.unwrap();
+                    let cached = match range.get((r, c)) {
+                        None | Some(CData::Empty) => Value::Empty,
+                        Some(other) => Value::from_calamine(other),
+                    };
                     let format_code = format_code_at(r, c);
                     let style_idx = style_idx_at(r, c);
                     CellSource::CellFormula {
-                        text: formula_text,
-                        cached: Value::Empty,
+                        text: formula_here.unwrap(),
+                        cached,
                         format_code,
                         style_idx,
                     }
@@ -1004,24 +1013,9 @@ fn build_row_plans_for_range(
                 Some(other) => {
                     any_cell = true;
                     directive_only = false;
-                    // ADR-0021: a native Excel formula in a static
-                    // template cell preserves its text. ADR-0046:
-                    // the same applies to formulas inside expansion
-                    // blocks — the text is cloned verbatim per row.
-                    if let Some(formula_text) = formula_here {
-                        let format_code = format_code_at(r, c);
-                        let style_idx = style_idx_at(r, c);
-                        CellSource::CellFormula {
-                            text: formula_text,
-                            cached: Value::from_calamine(other),
-                            format_code,
-                            style_idx,
-                        }
-                    } else {
-                        CellSource::Literal {
-                            value: Value::from_calamine(other),
-                            style_idx: style_idx_at(r, c),
-                        }
+                    CellSource::Literal {
+                        value: Value::from_calamine(other),
+                        style_idx: style_idx_at(r, c),
                     }
                 }
             };
@@ -1078,7 +1072,21 @@ fn build_row_plans_for_range(
         }
 
         if has_subtotal && !has_source_template {
-            if let Some(RowPlan::ExpandDown { subtotal_rows, .. }) = row_plans.last_mut() {
+            if let Some(RowPlan::ExpandDown {
+                subtotal_rows,
+                side_rows,
+                col_range,
+                ..
+            }) = row_plans.last_mut()
+            {
+                // ADR-0066: `side_rows` is dense — index i is the
+                // template row at offset i+1 from the expansion row,
+                // which is what pins outside-block cells to their
+                // original row position. A subtotal row occupies one
+                // of those offsets, so reserve an empty slot for it.
+                if col_range.is_some() {
+                    side_rows.push(vec![CellSource::Empty; row_cells.len()]);
+                }
                 subtotal_rows.push(row_cells);
                 continue;
             }
