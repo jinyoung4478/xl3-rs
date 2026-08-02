@@ -13,7 +13,7 @@
 //!
 //! let template = std::fs::read("template.xlsx").unwrap();
 //! let data = std::fs::read("data.xlsx").unwrap();
-//! let files = render_from_bytes_to_files(&template, &data).unwrap();
+//! let files = render_from_bytes_to_files(&template, data).unwrap();
 //! std::fs::write(&files[0].filename, &files[0].data).unwrap();
 //! ```
 //!

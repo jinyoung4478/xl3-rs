@@ -1,5 +1,5 @@
 //! ADR-0066 ghost-style regression — issue #2 (upstream xl3 0.8.1,
-//! commit jinyoung4478/xl3@174bba1).
+//! commit xl3-lang/xl3@174bba1).
 //!
 //! The JS engine's splice-then-restore pass moved outside-block
 //! ("side") cells back to their original rows after an expansion

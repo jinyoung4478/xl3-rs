@@ -1,6 +1,6 @@
 # xl3-rs — Claude Code 세션 컨텍스트
 
-이 레포는 [xl3](https://github.com/jinyoung4478/xl3) (TS Excel 템플릿 엔진) 의 **Rust + WebAssembly 가속 구현**.
+이 레포는 [xl3](https://github.com/xl3-lang/xl3) (TS Excel 템플릿 엔진) 의 **Rust + WebAssembly 가속 구현**.
 
 세션 시작하면 먼저 **반드시 다음 두 파일 정독**:
 1. [`PLAN.md`](./PLAN.md) — 작업 계획 전체 (목표, 아키텍처, 8주 일정, 리스크)
@@ -50,7 +50,7 @@
 - **Error code 인프라** (2026-05-26) — `XtlError { code }` propagation 완성. arity / xlookup 코드 정착, wasm-bridge 가 `[xl3/...]` prefix → JS Error `.code` 변환
 - **publish 라운드** (2026-05-26~27):
   - crates.io `xl3-core` 0.1.0 + `xl3` 0.0.1 (placeholder)
-  - npm `xl3-wasm` 0.1.0 + `@jinyoung4478/xl3` 0.9.0-rc.1 (rc tag, latest 0.8.0 유지)
+  - npm `xl3-wasm` 0.1.0 + `@jinyoung4478/xl3` 0.9.0-rc.1 (당시 이름, 현재 `@xl3-lang/xl3`) (rc tag, latest 0.8.0 유지)
   - GitHub Release `v0.9.0-rc.1` (prerelease) + tags `xl3-core-v0.1.0`, `xl3-wasm-v0.1.0`
   - End-to-end smoke test 통과 (js/wasm/auto 3 모드)
   - docs.rs 빌드 성공
@@ -64,8 +64,16 @@
   - **수정됨** (`19a79bd`) — `CellSource::Literal` 도 manifest style_idx 를 받음 → literal 헤더/사이드 셀 스타일 보존 (stage-2 gap 해소). **breaking** (variant 형태 변경) → 0.2.0 사유.
   - 참고: native conformance 하니스가 sibling xl3 checkout (Phase 2 / 0.8.x 상태로 이동) 기준 142/143/144 실패 — 이번 변경 전부터 동일 (변경 전후 66/69). corpus 버전 흔들림 주의.
 - **0.2.0 publish 라운드** (2026-06-07) — crates.io `xl3-core` 0.2.0 + npm `xl3-wasm` 0.2.0 (latest). 146/148 라인이 공개 패키지에 도달. 0.1.1 예정이었으나 Literal variant 변경이 semver-breaking 이라 0.2.0 으로. wasm 번들 1.81MB raw / 0.75MB gz (KPI <2MB 통과), Node 스모크 통과. tags `xl3-core-v0.2.0` / `xl3-wasm-v0.2.0` + GitHub Release 페이지 2건. issue #1 에 publish 보고 + close 제안 (063/143 분리 issue 제안 포함).
+- **상류 재싱크 라운드** (2026-08-02) — 2개월 (xl3 main `22d9c2f` → `7b0ce42`, 70 커밋) 만에 corpus/네이밍 동기화:
+  - **org / 패키지 rename 반영** — GitHub `jinyoung4478/*` → **`xl3-lang/*`**, npm `@jinyoung4478/xl3` → **`@xl3-lang/xl3`** (0.11.0, homepage xl3.io). 우리 npm 이름은 그대로 `xl3-wasm` (unscoped). Cargo.toml `repository`, README/README.ko/crate README/CHANGELOG 링크 갱신. **git remote 는 아직 옛 URL** (`jinyoung4478/xl3-rs`, 301 리다이렉트로 동작 중) — `git remote set-url origin https://github.com/xl3-lang/xl3-rs.git` 는 사용자가 실행
+  - **corpus 154 → 169** — 신규 156~170 (156 static native value, 157 ADR-0066 grouped side cells, 158 chained arithmetic, 159/160 subtotal ADR-0073, 161 ADR-0074, 162~170 G24 data-loss)
+  - **fixture 157 통과 (issue #3 해결)** — `render_grouped` 가 side_rows 를 그룹별 iter_idx 대신 **블록 output offset** 으로 조회. plan 쪽은 subtotal 행이 소비한 offset 자리에 빈 placeholder 를 넣어 side_rows 밀도 유지 (offset == index+1 불변식)
+  - **fixture 160 통과 (ADR-0073/0046)** — planner 가 수식 셀의 캐시값을 마커/디렉티브 텍스트로 읽던 문제. formula 분기를 캐시값 검사보다 먼저 두어 `{{ [Col] }} / Subtotal` 캐시가 subtotal 행을 데이터 행으로 강등시키던 self-corruption 차단
+  - **native 하니스 확장** — 69 → 79 테스트 (156/157/158/160 + G24 6건). 160 은 값 전용 comparator 로 표현 불가 (expected.xlsx 수식 셀에 캐시 없음) 라 plan 레벨 assert 로 고정
 
-**현재 conformance**: `--engine=wasm` **146/148 (98.6%)** stage 1 (146/154 passed · 2 failed · 6 skipped), js baseline 148/148.
+**현재 conformance** (upstream `7b0ce42`, 169 fixtures 기준): `--engine=wasm` **160/169 통과 · 2 실패 · 7 skip (stage 2 요구)**. js baseline 162/169. 즉 **JS 대비 gap 은 063/143 두 건뿐**. stage 2 는 158/169 (11 실패, manifest/style parity 미완).
+
+주의 — 러너는 `engine: 'wasm'` 이어도 **템플릿 파싱을 JS 로 먼저** 한다 (manifest 추출 목적, `impl/js/src/index.ts` convert). 따라서 error 계열 픽스처(151/152/153/159/161 등)는 **Rust 에러 경로를 검증하지 않는다**. Rust 는 `xl3/subtotal/{mixed-row, explicit-block-unsupported}` 등 상류 신규 코드를 아직 안 갖고 있음 (errors.rs 미정의) — 표에 안 잡히는 실제 gap.
 
 남은 2건 — 둘 다 rust_xlsxwriter writer-side 한계:
 - **063 blank vs value compare** — eval / `coerce_for_num_fmt` 는 이미 `Empty → String("")` 변환을 만들어 두었지만 rust_xlsxwriter `store_string` 이 빈 문자열을 무조건 drop. 해결: XML post-process 레이어 또는 writer 교체.
@@ -77,22 +85,22 @@
 
 ## 다음 세션 시작 시 결정 사항
 
-1. **issue #1 close + 분리** — publish 보고 코멘트에 제안해 둠. 063/143 writer-side epic 용 좁은 issue + stage-2/manifest parity (border 포함) issue 로 분리 후 #1 close. 사용자 승인 대기.
+1. **0.2.1 publish** — 157/160 수정이 미배포 상태 (CHANGELOG `Unreleased`). crates.io + npm 토큰은 매번 revoke 되므로 사용자가 `cargo login` / `npm login` 후 진행. issue #3 은 배포 시 close.
 
-2. **xl3 TS 0.9.0 정식 cut** — **xl3 issue #48 이 canonical tracker**
-   - rc soak 은 ROADMAP **G23 기준 ≥21일** (7일은 stale 문서였음, `52e56b3` 에서 정정). v0.9.0-rc.1 publish 2026-05-26 → soak 종료 **2026-06-16**
-   - soak 건강: ADR-0066 ghost 버그 (0.8.1 backport) 는 G23 정의상 critical 아님 → soak clock 리셋 없음. wasm conformance gap 은 opt-in 이라 G23 게이트 아님
-   - 결정/절차 체크리스트는 xl3#48 본문 참조 (06-16 이후 실행). xl3 (TS) 측 작업은 사용자가 별도 진행
+2. **issue #1 close + 분리** — 여전히 열림. 남은 gap 이 063/143 로 좁아졌으니 (원래 29건) 제목/범위가 낡음. 063/143 writer-side epic + stage-2/manifest parity (border) 로 분리 후 close 제안, 사용자 승인 대기.
 
-3. **남은 Group B 2건 — rust_xlsxwriter 한계 작업**
-   - 063 / 143 둘 다 rust_xlsxwriter 자체의 빈 문자열 / shared-formula write API 부재가 블로커.
+3. **에러 코드 gap (신규 발견)** — 상류 language.md 가 정의한 코드 중 Rust `errors.rs` 에 없는 것들: `xl3/subtotal/{mixed-row, explicit-block-unsupported, bad-aggregate}`, `xl3/block/{overlap, empty-table}`, `xl3/directive/{orphan, invalid-syntax}`, `xl3/expression/{row-outside-block, bracket-outside-block}`, `xl3/eval/{no-match, bad-aggregate-arg}`, `xl3/group/missing-key`, `xl3/source/undeclared`, `xl3/parser/unbalanced-literal`. TS 러너가 파싱을 선행해서 conformance 로는 안 잡힘 — 별도 검증 필요 (native 하니스 또는 wasm 직접 호출).
+
+4. **남은 2건 — rust_xlsxwriter 한계 작업** (변동 없음)
+   - 063 / 143 둘 다 rust_xlsxwriter 의 빈 문자열 drop / shared-formula write API 부재가 블로커.
    - 짧게 가는 길: XLSX XML post-process 레이어 (xl3-core/src/output.rs 뒷단). store_string drop 회피 + shared-formula 슬레이브 `<c><f t="shared" si="..."/></c>` 주입.
    - 길게 가는 길: rust_xlsxwriter PR 또는 writer 교체 후보 (umya-spreadsheet?). 별도 epic.
-   - 정식 0.9.0 이후 0.9.1 사이클로.
 
-4. **issue #3 — grouped side-row 중복** — xl3#51 fixture 대기. 착지하면 `render_grouped` 수정 후 0.2.x patch.
+5. **stage-2 후보** — border manifest 지원 (Rust `StyleSpec` 에 border 없음 + TS 추출기도 미전송, 양쪽 공동 작업). 상류 fixture 170 (`@repeat` 확장 전체 행의 numFmt 상속, #96) 도 stage-2 라 현재 skip — stage 2 를 건드릴 때 같이 본다.
 
-5. **stage-2 후보** — border manifest 지원 (Rust `StyleSpec` 에 border 없음 + TS 추출기도 미전송, 양쪽 공동 작업)
+6. **JSON source (ADR-0075, xl3 0.11.0)** — `convertJson` / `previewJson` 는 상류가 **wasm 명시적 미지원** (`engine: 'wasm'` + JSON 이면 throw). conformance fixture 도 없음. 우리가 대응할지는 선택 — 안 하면 그대로 JS 전용 경로.
+
+7. **native 하니스 3건 실패는 comparator 한계** — 142/143/144. 값 전용 비교라 (a) 후행 빈 셀 폭 차이, (b) expected.xlsx 수식 셀에 캐시가 없어 우리 캐시값과 어긋남 이 원인. 142/144 는 상류 러너에서 **통과**한다. 정본은 `--engine=wasm` 러너 결과.
 
 ---
 
@@ -127,11 +135,27 @@ JSON 디코딩, `JsValue` 변환은 **`xl3-wasm` 측에서만**. 이 경계가 �
 
 ## xl3 (본 레포) 와의 관계
 
-- 형제 레포: `/Users/wefun/workspaces/playground/xl3` (TS 본체)
-- xl3 가 `@jinyoung4478/xl3-wasm` 을 옵셔널 디펜던시로 import
+- 형제 레포: `/Users/wefun/workspaces/playground/xl3` (TS 본체). 0.11.0 부터 JS 구현이 **`impl/js/`** npm workspace 로 이동 (루트는 표준/spec/corpus)
+- `@xl3-lang/xl3` 가 `xl3-wasm` 을 런타임 `import()` 로 옵셔널 로드 (package.json 의존성 아님)
 - 런타임 가용성 감지 후 가속 경로 또는 기존 exceljs 폴백
 - conformance 는 항상 xl3 (TS) 가 정의. Rust 는 bit-exact 재현
 - Python 포트 (xtl-py, ax-exform G15) 와 동시 진행 시 conformance 흔들림 주의 — Python 1.0 안정화 후 Rust 본격화 권장
+
+### 가속 경로 conformance 돌리는 법 (형제 레포 미오염)
+
+형제 체크아웃은 사용자 작업 공간이라 빌드/설치로 건드리지 않는다. 스크래치패드에
+`impl/js` 를 복사하고 node_modules 만 심볼릭 링크해서 돌린다:
+
+```bash
+wasm-pack build crates/xl3-wasm --target nodejs --release --out-dir pkg-node
+S=<scratchpad>/xl3sync; mkdir -p "$S/js"
+(cd ../xl3/impl/js && tar cf - --exclude node_modules --exclude dist .) | (cd "$S/js" && tar xf -)
+ln -s ../xl3/impl/js/node_modules "$S/js/node_modules"   # workspace-local
+ln -s ../xl3/node_modules "$S/node_modules"              # hoisted (exceljs 등)
+mkdir -p "$S/js/dist/node_modules" && ln -s <xl3-rs>/crates/xl3-wasm/pkg-node "$S/js/dist/node_modules/xl3-wasm"
+(cd "$S/js" && ../../xl3/node_modules/.bin/tsc -p tsconfig.build.json)   # 타입 에러는 무시 (emit 됨)
+node dist/bin/conformance.js --fixture-dir=<xl3>/conformance/fixtures --engine=wasm
+```
 
 ---
 

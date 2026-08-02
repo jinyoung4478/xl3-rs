@@ -1,6 +1,6 @@
 # xl3-rs
 
-Rust + WebAssembly 가속기. [xl3](https://github.com/jinyoung4478/xl3) (TypeScript) — Excel 템플릿 렌더러 — 의 브라우저 변환 퍼포먼스를 카테고리 단위로 끌어올리기 위한 형제 구현.
+Rust + WebAssembly 가속기. [xl3](https://github.com/xl3-lang/xl3) (TypeScript) — Excel 템플릿 렌더러 — 의 브라우저 변환 퍼포먼스를 카테고리 단위로 끌어올리기 위한 형제 구현.
 
 > **상태**: Phase 0 (Feasibility) 통과. Phase 1 (xl3-core 본 구현) 진행 중.
 
@@ -60,17 +60,26 @@ xl3-rs/
 
 ## 배포
 
-- **NPM**: `@jinyoung4478/xl3-wasm` (wasm-pack 출력) — xl3 가 옵셔널 디펜던시로 사용
-- **crates.io** (후속): `xl3-core` — Rust 단독 사용자용
+- **NPM**: [`xl3-wasm`](https://www.npmjs.com/package/xl3-wasm) (wasm-pack 출력) — `@xl3-lang/xl3` 가 런타임에 옵셔널로 로드
+- **crates.io**: [`xl3-core`](https://crates.io/crates/xl3-core) — Rust 단독 사용자용
 
 ## Conformance
 
-[`xl3`](https://github.com/jinyoung4478/xl3) (TS) 의 `conformance/fixtures/` 가 spec 의 정본.
+[`xl3`](https://github.com/xl3-lang/xl3) (TS) 의 `conformance/fixtures/` 가 spec 의 정본.
 Rust 측은 동일한 fixture set 을 통과하는 것을 목표로 함. Stage 1 (셀 값 비교) 우선,
 Stage 2 (OOXML 정규화 후 바이트 일치) 는 후속.
 
-자매 구현체: [xl3-py](https://github.com/jinyoung4478/xl3-py) (Python, 148/148 통과).
+상류 러너로 가속 경로를 검증한다:
+
+```bash
+npm run conformance -- --engine=wasm   # xl3 체크아웃에서 xl3-wasm 이 resolve 되는 상태로
+```
+
+현재 통과 현황은 [`CLAUDE.md`](./CLAUDE.md) 에 기록. 픽스처가 상류에 추가될 때마다
+숫자가 움직이므로 README 에는 고정하지 않는다.
+
+자매 구현체: [xl3-py](https://github.com/xl3-lang/xl3-py) (Python).
 
 ## 라이선스
 
-MIT (예정).
+MIT.

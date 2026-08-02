@@ -1,6 +1,6 @@
 # xl3-rs
 
-> A Rust + WebAssembly acceleration core for **XTL (Excel Template Language)** — taking an `.xlsx` template plus a data workbook and rendering one or more output workbooks. Sister to [`xl3`](https://github.com/jinyoung4478/xl3) (TypeScript reference) and [`xl3-py`](https://github.com/jinyoung4478/xl3-py) (Python reference); built for the browser path where TS hits memory and time walls on million-cell workbooks.
+> A Rust + WebAssembly acceleration core for **XTL (Excel Template Language)** — taking an `.xlsx` template plus a data workbook and rendering one or more output workbooks. Sister to [`xl3`](https://github.com/xl3-lang/xl3) (TypeScript reference) and [`xl3-py`](https://github.com/xl3-lang/xl3-py) (Python reference); built for the browser path where TS hits memory and time walls on million-cell workbooks.
 
 한국어 문서: [`README.ko.md`](./README.ko.md). Detailed planning lives in [`PLAN.md`](./PLAN.md) (Korean).
 
@@ -47,7 +47,7 @@ const inputs = readTemplateInputs(templateBytes);
 From xl3 (TS) you opt into the wasm engine through `ConvertOptions.engine`:
 
 ```ts
-import { convert } from '@jinyoung4478/xl3';
+import { convert } from '@xl3-lang/xl3';
 const outputs = await convert(templateBuffer, sourceBuffer, {
   inputs: { month: '2026-05' },
   engine: 'auto', // 'wasm' to require, 'js' to force the ExcelJS path
@@ -127,17 +127,21 @@ node --expose-gc scripts/measure-wasm.mjs path/to/input.xlsx out/wasm.xlsx --run
 
 Phase 0 deliberately ignores style / merge / formula preservation — it's the upper bound on cell I/O. Preservation lands in Phase 1.
 
-## Distribution (planned)
+## Distribution
 
-- **npm**: `@jinyoung4478/xl3-wasm` — `wasm-pack` output. `xl3` (TS) consumes it as an optional dependency and falls back to the existing `exceljs` path when WASM isn't available.
-- **crates.io** (later): `xl3-core` — for Tauri / CLI / server consumers who want pure Rust.
+- **npm**: [`xl3-wasm`](https://www.npmjs.com/package/xl3-wasm) — `wasm-pack` output. `@xl3-lang/xl3` (TS) resolves it at runtime as an optional dependency and falls back to the existing `exceljs` path when WASM isn't available.
+- **crates.io**: [`xl3-core`](https://crates.io/crates/xl3-core) — for Tauri / CLI / server consumers who want pure Rust.
 
 ## Conformance
 
-The XTL spec and golden fixtures live in [`xl3`](https://github.com/jinyoung4478/xl3) — `conformance/fixtures/` — and the TS implementation is the reference. xl3-rs targets the same corpus (154 fixtures at time of writing); xl3-py already passes 148 / 148 stage-1 fixtures and is the model for tracking conformance progress.
+The XTL spec and golden fixtures live in [`xl3`](https://github.com/xl3-lang/xl3) — `conformance/fixtures/` — and the TS implementation is the reference. xl3-rs targets the same corpus, driven through the upstream runner:
 
-Stage 1 (cell-value comparison) is the primary bar. Stage 2 (canonical OOXML byte comparison) is deferred along with the spec.
+```bash
+npm run conformance -- --engine=wasm      # in an xl3 checkout with xl3-wasm resolvable
+```
+
+Stage 1 (cell-value comparison) is the primary bar. Stage 2 (canonical OOXML byte comparison) is deferred along with the spec. Current standing is tracked in [`CLAUDE.md`](./CLAUDE.md); the counts move whenever a fixture lands upstream, so they aren't repeated here.
 
 ## License
 
-MIT (planned, matching xl3 and xl3-py).
+MIT, matching xl3 and xl3-py.

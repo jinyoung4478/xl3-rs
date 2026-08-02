@@ -2,7 +2,7 @@
 
 WebAssembly wrapper around [`xl3-core`](https://crates.io/crates/xl3-core)
 — the pure-Rust XLSX template rendering engine — packaged for browser
-and Node hosts. Used by the [TypeScript engine](https://www.npmjs.com/package/@jinyoung4478/xl3)
+and Node hosts. Used by the [TypeScript engine](https://www.npmjs.com/package/@xl3-lang/xl3)
 as an optional acceleration path.
 
 ## Install
@@ -10,10 +10,10 @@ as an optional acceleration path.
 ```bash
 npm install xl3-wasm
 # or
-npm install xl3-wasm @jinyoung4478/xl3
+npm install xl3-wasm @xl3-lang/xl3
 ```
 
-When `xl3-wasm` is present alongside `@jinyoung4478/xl3`, the engine
+When `xl3-wasm` is present alongside `@xl3-lang/xl3`, the engine
 auto-detects the acceleration path; otherwise it falls back to the
 ExcelJS implementation.
 
@@ -51,7 +51,7 @@ const wasmPath = require.resolve('xl3-wasm').replace(/xl3_wasm\.js$/, 'xl3_wasm_
 await init({ module_or_path: await readFile(wasmPath) });
 ```
 
-`@jinyoung4478/xl3` handles both paths internally; consumers driving
+`@xl3-lang/xl3` handles both paths internally; consumers driving
 the TS engine don't need this snippet.
 
 ## Errors
@@ -76,8 +76,8 @@ MIT.
 
 ## Related
 
-- [`@jinyoung4478/xl3`](https://www.npmjs.com/package/@jinyoung4478/xl3)
+- [`@xl3-lang/xl3`](https://www.npmjs.com/package/@xl3-lang/xl3)
   — TypeScript engine (template parser + acceleration shell)
 - [`xl3-core`](https://crates.io/crates/xl3-core) — pure-Rust engine,
   for native Rust / Tauri / PyO3 hosts
-- [Repository](https://github.com/jinyoung4478/xl3-rs)
+- [Repository](https://github.com/xl3-lang/xl3-rs)

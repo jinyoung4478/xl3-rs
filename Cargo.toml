@@ -5,7 +5,7 @@ members = ["crates/xl3-core", "crates/xl3-wasm"]
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/jinyoung4478/xl3-rs"
+repository = "https://github.com/xl3-lang/xl3-rs"
 rust-version = "1.83"
 
 [profile.release]

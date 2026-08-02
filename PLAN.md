@@ -213,9 +213,9 @@ xl3/
 ```
 
 배포:
-- **NPM**: `@jinyoung4478/xl3-wasm` — wasm-pack 결과물 (`xl3-wasm` crate)
+- **NPM**: `xl3-wasm` — wasm-pack 결과물 (`xl3-wasm` crate)
 - **crates.io** (선택): `xl3-core` — 순수 Rust crate. Tauri / CLI / 서버 / PyO3 컨슈머용. 첫 릴리즈는 후속 페이즈
-- TS 쪽 `@jinyoung4478/xl3` 가 `@jinyoung4478/xl3-wasm` 을 옵셔널 디펜던시로 참조, 런타임 가용성 감지 후 사용
+- TS 쪽 `@xl3-lang/xl3` 가 `xl3-wasm` 을 옵셔널 디펜던시로 참조, 런타임 가용성 감지 후 사용
 
 API 경계 원칙:
 - `xl3-core` API 는 **JSON/JsValue 와 무관**. 평범한 Rust 타입 (`&[u8]`, `TemplatePlan`, `Manifest`, trait `SourceReader`/`XlsxWriter`)

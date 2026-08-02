@@ -1,7 +1,7 @@
 # xl3-core
 
 Pure-Rust XLSX template rendering engine — the acceleration core for
-[xl3](https://github.com/jinyoung4478/xl3). Reads an Excel template
+[xl3](https://github.com/xl3-lang/xl3). Reads an Excel template
 plus a data workbook, evaluates the [XTL](https://xl3.io) expressions
 inside template cells, and emits a rendered XLSX buffer.
 
