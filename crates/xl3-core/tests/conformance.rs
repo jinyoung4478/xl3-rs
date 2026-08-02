@@ -768,6 +768,99 @@ fn fixture_144_block_side_cells_after_block() {
 }
 
 #[test]
+fn fixture_156_static_native_value_preservation() {
+    run_fixture("156-static-native-value-preservation").expect("fixture 156 should pass");
+}
+
+/// ADR-0066 grouped variant: outside-block cells next to a
+/// `@group`/`@subtotal` block are emitted once, at their original row
+/// position — never once per group (xl3-rs#3, upstream fixture xl3#51).
+#[test]
+fn fixture_157_group_block_side_cells() {
+    run_fixture("157-group-block-side-cells").expect("fixture 157 should pass");
+}
+
+#[test]
+fn fixture_158_chained_arithmetic_associativity() {
+    run_fixture("158-chained-arithmetic-associativity").expect("fixture 158 should pass");
+}
+
+/// ADR-0073 / ADR-0046: a formula cell's cached `<v>` is never read as
+/// template text, so a `@subtotal` label formula caching
+/// `{{ [Col] }} / Subtotal` cannot demote its own row.
+///
+/// Asserted at the plan level rather than through `run_fixture`: the
+/// value-only comparator here reads a formula cell's cached result,
+/// while `expected.xlsx` stores formulas without one — the fixture is
+/// pinned end to end by the xl3 runner (`--engine=wasm`) instead.
+#[test]
+fn fixture_160_subtotal_formula_cache_not_marker() {
+    use xl3_core::plan::{parse_template, CellSource, RowPlan};
+
+    let Some(dir) = fixture_dir("160-subtotal-formula-cache-not-marker") else {
+        eprintln!("[skip] fixture 160: corpus not found");
+        return;
+    };
+    let plan = parse_template(&dir.join("template.xlsx")).expect("parse fixture 160 template");
+    let sheet = plan
+        .sheets
+        .iter()
+        .find(|s| s.name == "Report")
+        .expect("Report sheet");
+    let subtotal_rows = sheet
+        .rows
+        .iter()
+        .find_map(|r| match r {
+            RowPlan::ExpandDown { subtotal_rows, .. } => Some(subtotal_rows),
+            _ => None,
+        })
+        .expect("Report should plan one expansion block");
+    assert_eq!(
+        subtotal_rows.len(),
+        1,
+        "the formula-labelled row must stay a subtotal row, not be demoted to a second data row"
+    );
+    assert!(
+        subtotal_rows[0]
+            .iter()
+            .any(|c| matches!(c, CellSource::CellFormula { .. })),
+        "the label cell keeps its formula; its cached marker-looking text is not template text"
+    );
+}
+
+// G24 data-loss group — value-type fidelity through expansion.
+#[test]
+fn fixture_162_data_loss_number_type_preserved() {
+    run_fixture("162-data-loss-number-type-preserved").expect("fixture 162 should pass");
+}
+
+#[test]
+fn fixture_164_data_loss_leading_zero_string_stays_string() {
+    run_fixture("164-data-loss-leading-zero-string-stays-string").expect("fixture 164 should pass");
+}
+
+#[test]
+fn fixture_165_data_loss_boolean_type_preserved() {
+    run_fixture("165-data-loss-boolean-type-preserved").expect("fixture 165 should pass");
+}
+
+#[test]
+fn fixture_166_data_loss_percent_flows_as_underlying_number() {
+    run_fixture("166-data-loss-percent-flows-as-underlying-number")
+        .expect("fixture 166 should pass");
+}
+
+#[test]
+fn fixture_168_data_loss_date_time_component_round_trip() {
+    run_fixture("168-data-loss-date-time-component-round-trip").expect("fixture 168 should pass");
+}
+
+#[test]
+fn fixture_169_data_loss_formula_cached_result_kind() {
+    run_fixture("169-data-loss-formula-cached-result-kind").expect("fixture 169 should pass");
+}
+
+#[test]
 fn fixture_147_multi_block_different_sources() {
     run_fixture("147-multi-block-different-sources")
         .expect("fixture 147 should pass");
