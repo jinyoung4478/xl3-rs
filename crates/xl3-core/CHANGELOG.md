@@ -1,6 +1,6 @@
 # xl3-core CHANGELOG
 
-## Unreleased
+## 0.2.1 — 2026-08-02
 
 Re-synced against the xl3 corpus as of upstream `7b0ce42` (2026-08-02,
 169 stage-1 fixtures, up from 154). Stage 1 via `--engine=wasm`:
