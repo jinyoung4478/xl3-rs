@@ -70,6 +70,7 @@
   - **fixture 157 통과 (issue #3 해결)** — `render_grouped` 가 side_rows 를 그룹별 iter_idx 대신 **블록 output offset** 으로 조회. plan 쪽은 subtotal 행이 소비한 offset 자리에 빈 placeholder 를 넣어 side_rows 밀도 유지 (offset == index+1 불변식)
   - **fixture 160 통과 (ADR-0073/0046)** — planner 가 수식 셀의 캐시값을 마커/디렉티브 텍스트로 읽던 문제. formula 분기를 캐시값 검사보다 먼저 두어 `{{ [Col] }} / Subtotal` 캐시가 subtotal 행을 데이터 행으로 강등시키던 self-corruption 차단
   - **native 하니스 확장** — 69 → 79 테스트 (156/157/158/160 + G24 6건). 160 은 값 전용 comparator 로 표현 불가 (expected.xlsx 수식 셀에 캐시 없음) 라 plan 레벨 assert 로 고정
+- **0.2.1 publish 라운드** (2026-08-02) — crates.io `xl3-core` 0.2.1 + npm `xl3-wasm` 0.2.1 (latest). 공개 API 변경 없는 동작 수정이라 patch. 번들 1.73MB raw / 0.73MB gz. 실제 배포될 **web-target 아티팩트로** conformance 재확인 (160/169) 후 배포. docs.rs 빌드 성공. tags `xl3-core-v0.2.1` / `xl3-wasm-v0.2.1` + GitHub Release 2건. **issue #3 close** (fixture 157 fix 보고). npm 은 OTP 브라우저 인증이 필요해 사용자가 직접 `npm publish` 실행
 
 **현재 conformance** (upstream `7b0ce42`, 169 fixtures 기준): `--engine=wasm` **160/169 통과 · 2 실패 · 7 skip (stage 2 요구)**. js baseline 162/169. 즉 **JS 대비 gap 은 063/143 두 건뿐**. stage 2 는 158/169 (11 실패, manifest/style parity 미완).
 
@@ -85,22 +86,20 @@
 
 ## 다음 세션 시작 시 결정 사항
 
-1. **0.2.1 publish** — 157/160 수정이 미배포 상태 (CHANGELOG `Unreleased`). crates.io + npm 토큰은 매번 revoke 되므로 사용자가 `cargo login` / `npm login` 후 진행. issue #3 은 배포 시 close.
+1. **issue #1 close + 분리** — 여전히 열림. 남은 gap 이 063/143 로 좁아졌으니 (원래 29건) 제목/범위가 낡음. 063/143 writer-side epic + stage-2/manifest parity (border) 로 분리 후 close 제안, 사용자 승인 대기.
 
-2. **issue #1 close + 분리** — 여전히 열림. 남은 gap 이 063/143 로 좁아졌으니 (원래 29건) 제목/범위가 낡음. 063/143 writer-side epic + stage-2/manifest parity (border) 로 분리 후 close 제안, 사용자 승인 대기.
+2. **에러 코드 gap (신규 발견)** — 상류 language.md 가 정의한 코드 중 Rust `errors.rs` 에 없는 것들: `xl3/subtotal/{mixed-row, explicit-block-unsupported, bad-aggregate}`, `xl3/block/{overlap, empty-table}`, `xl3/directive/{orphan, invalid-syntax}`, `xl3/expression/{row-outside-block, bracket-outside-block}`, `xl3/eval/{no-match, bad-aggregate-arg}`, `xl3/group/missing-key`, `xl3/source/undeclared`, `xl3/parser/unbalanced-literal`. TS 러너가 파싱을 선행해서 conformance 로는 안 잡힘 — 별도 검증 필요 (native 하니스 또는 wasm 직접 호출).
 
-3. **에러 코드 gap (신규 발견)** — 상류 language.md 가 정의한 코드 중 Rust `errors.rs` 에 없는 것들: `xl3/subtotal/{mixed-row, explicit-block-unsupported, bad-aggregate}`, `xl3/block/{overlap, empty-table}`, `xl3/directive/{orphan, invalid-syntax}`, `xl3/expression/{row-outside-block, bracket-outside-block}`, `xl3/eval/{no-match, bad-aggregate-arg}`, `xl3/group/missing-key`, `xl3/source/undeclared`, `xl3/parser/unbalanced-literal`. TS 러너가 파싱을 선행해서 conformance 로는 안 잡힘 — 별도 검증 필요 (native 하니스 또는 wasm 직접 호출).
-
-4. **남은 2건 — rust_xlsxwriter 한계 작업** (변동 없음)
+3. **남은 2건 — rust_xlsxwriter 한계 작업** (변동 없음)
    - 063 / 143 둘 다 rust_xlsxwriter 의 빈 문자열 drop / shared-formula write API 부재가 블로커.
    - 짧게 가는 길: XLSX XML post-process 레이어 (xl3-core/src/output.rs 뒷단). store_string drop 회피 + shared-formula 슬레이브 `<c><f t="shared" si="..."/></c>` 주입.
    - 길게 가는 길: rust_xlsxwriter PR 또는 writer 교체 후보 (umya-spreadsheet?). 별도 epic.
 
-5. **stage-2 후보** — border manifest 지원 (Rust `StyleSpec` 에 border 없음 + TS 추출기도 미전송, 양쪽 공동 작업). 상류 fixture 170 (`@repeat` 확장 전체 행의 numFmt 상속, #96) 도 stage-2 라 현재 skip — stage 2 를 건드릴 때 같이 본다.
+4. **stage-2 후보** — border manifest 지원 (Rust `StyleSpec` 에 border 없음 + TS 추출기도 미전송, 양쪽 공동 작업). 상류 fixture 170 (`@repeat` 확장 전체 행의 numFmt 상속, #96) 도 stage-2 라 현재 skip — stage 2 를 건드릴 때 같이 본다.
 
-6. **JSON source (ADR-0075, xl3 0.11.0)** — `convertJson` / `previewJson` 는 상류가 **wasm 명시적 미지원** (`engine: 'wasm'` + JSON 이면 throw). conformance fixture 도 없음. 우리가 대응할지는 선택 — 안 하면 그대로 JS 전용 경로.
+5. **JSON source (ADR-0075, xl3 0.11.0)** — `convertJson` / `previewJson` 는 상류가 **wasm 명시적 미지원** (`engine: 'wasm'` + JSON 이면 throw). conformance fixture 도 없음. 우리가 대응할지는 선택 — 안 하면 그대로 JS 전용 경로.
 
-7. **native 하니스 3건 실패는 comparator 한계** — 142/143/144. 값 전용 비교라 (a) 후행 빈 셀 폭 차이, (b) expected.xlsx 수식 셀에 캐시가 없어 우리 캐시값과 어긋남 이 원인. 142/144 는 상류 러너에서 **통과**한다. 정본은 `--engine=wasm` 러너 결과.
+6. **native 하니스 3건 실패는 comparator 한계** — 142/143/144. 값 전용 비교라 (a) 후행 빈 셀 폭 차이, (b) expected.xlsx 수식 셀에 캐시가 없어 우리 캐시값과 어긋남 이 원인. 142/144 는 상류 러너에서 **통과**한다. 정본은 `--engine=wasm` 러너 결과.
 
 ---
 
