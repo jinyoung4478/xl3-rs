@@ -80,26 +80,21 @@
 - **063 blank vs value compare** — eval / `coerce_for_num_fmt` 는 이미 `Empty → String("")` 변환을 만들어 두었지만 rust_xlsxwriter `store_string` 이 빈 문자열을 무조건 drop. 해결: XML post-process 레이어 또는 writer 교체.
 - **143 shared-formula `shared:Ref` marker** — rust_xlsxwriter 는 shared-formula write API 가 없음 (write_formula / write_array_formula 뿐). calamine 도 read 시 shared-formula 슬레이브를 full formula text 로 풀어 버려서 share 메타데이터가 우리 파이프라인에서 손실됨. 둘 다 패치해야 함.
 
-상세는 PLAN.md §5, issue #1.
+상세는 PLAN.md §5, **issue #4** (writer-side). issue #1 은 2026-08-02 에 #4 / #5 로 분리 후 close.
 
 ---
 
 ## 다음 세션 시작 시 결정 사항
 
-1. **issue #1 close + 분리** — 여전히 열림. 남은 gap 이 063/143 로 좁아졌으니 (원래 29건) 제목/범위가 낡음. 063/143 writer-side epic + stage-2/manifest parity (border) 로 분리 후 close 제안, 사용자 승인 대기.
+1. **에러 코드 gap (다음 라운드 후보)** — 상류 language.md 가 정의한 코드 중 Rust `errors.rs` 에 없는 것들: `xl3/subtotal/{mixed-row, explicit-block-unsupported, bad-aggregate}`, `xl3/block/{overlap, empty-table}`, `xl3/directive/{orphan, invalid-syntax}`, `xl3/expression/{row-outside-block, bracket-outside-block}`, `xl3/eval/{no-match, bad-aggregate-arg}`, `xl3/group/missing-key`, `xl3/source/undeclared`, `xl3/parser/unbalanced-literal`. TS 러너가 파싱을 선행해서 conformance 로는 안 잡힘 — 별도 검증 필요 (native 하니스 또는 wasm 직접 호출).
 
-2. **에러 코드 gap (신규 발견)** — 상류 language.md 가 정의한 코드 중 Rust `errors.rs` 에 없는 것들: `xl3/subtotal/{mixed-row, explicit-block-unsupported, bad-aggregate}`, `xl3/block/{overlap, empty-table}`, `xl3/directive/{orphan, invalid-syntax}`, `xl3/expression/{row-outside-block, bracket-outside-block}`, `xl3/eval/{no-match, bad-aggregate-arg}`, `xl3/group/missing-key`, `xl3/source/undeclared`, `xl3/parser/unbalanced-literal`. TS 러너가 파싱을 선행해서 conformance 로는 안 잡힘 — 별도 검증 필요 (native 하니스 또는 wasm 직접 호출).
+2. **issue #4 — writer-side (063 / 143)** — rust_xlsxwriter 의 빈 문자열 drop / shared-formula write API 부재가 블로커. 짧게: XLSX XML post-process 레이어 (xl3-core/src/output.rs 뒷단). 길게: rust_xlsxwriter PR 또는 writer 교체 (umya-spreadsheet?).
 
-3. **남은 2건 — rust_xlsxwriter 한계 작업** (변동 없음)
-   - 063 / 143 둘 다 rust_xlsxwriter 의 빈 문자열 drop / shared-formula write API 부재가 블로커.
-   - 짧게 가는 길: XLSX XML post-process 레이어 (xl3-core/src/output.rs 뒷단). store_string drop 회피 + shared-formula 슬레이브 `<c><f t="shared" si="..."/></c>` 주입.
-   - 길게 가는 길: rust_xlsxwriter PR 또는 writer 교체 후보 (umya-spreadsheet?). 별도 epic.
+3. **issue #5 — stage 2 (7 픽스처)** — 패키지 canonicalization + style manifest parity. border 는 Rust `StyleSpec` 에도 TS 추출기에도 없어 양쪽 공동 작업. 상류 fixture 170 (`@repeat` 확장 **모든** 행의 numFmt/스타일 상속, xl3#96) 도 여기 포함. stage 2 현황: 160/169 · 9 실패 (= #4 의 2건 + 여기 7건).
 
-4. **stage-2 후보** — border manifest 지원 (Rust `StyleSpec` 에 border 없음 + TS 추출기도 미전송, 양쪽 공동 작업). 상류 fixture 170 (`@repeat` 확장 전체 행의 numFmt 상속, #96) 도 stage-2 라 현재 skip — stage 2 를 건드릴 때 같이 본다.
+4. **JSON source (ADR-0075, xl3 0.11.0)** — `convertJson` / `previewJson` 는 상류가 **wasm 명시적 미지원** (`engine: 'wasm'` + JSON 이면 throw). conformance fixture 도 없음. 우리가 대응할지는 선택 — 안 하면 그대로 JS 전용 경로.
 
-5. **JSON source (ADR-0075, xl3 0.11.0)** — `convertJson` / `previewJson` 는 상류가 **wasm 명시적 미지원** (`engine: 'wasm'` + JSON 이면 throw). conformance fixture 도 없음. 우리가 대응할지는 선택 — 안 하면 그대로 JS 전용 경로.
-
-6. **native 하니스 3건 실패는 comparator 한계** — 142/143/144. 값 전용 비교라 (a) 후행 빈 셀 폭 차이, (b) expected.xlsx 수식 셀에 캐시가 없어 우리 캐시값과 어긋남 이 원인. 142/144 는 상류 러너에서 **통과**한다. 정본은 `--engine=wasm` 러너 결과.
+5. **native 하니스 3건 실패는 comparator 한계** — 142/143/144. 값 전용 비교라 (a) 후행 빈 셀 폭 차이, (b) expected.xlsx 수식 셀에 캐시가 없어 우리 캐시값과 어긋남 이 원인. 142/144 는 상류 러너에서 **통과**한다. 정본은 `--engine=wasm` 러너 결과.
 
 ---
 
